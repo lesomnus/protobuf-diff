@@ -22,3 +22,7 @@ func (x *Entry) ScatteredFrom(r ref.Ref) {
 func (x *Entry) SwappedWith(r ref.Ref) {
 	x.SetSwapped(r.Value())
 }
+
+func (x *Entry) Path() Path {
+	return Path{x.GetPath()}
+}

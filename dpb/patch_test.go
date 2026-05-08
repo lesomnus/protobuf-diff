@@ -959,3 +959,6 @@ func TestPatchMap(t *testing.T) {
 		x.PbEq(t, v, b)
 	})
 }
+
+func TeatPatchPath(t *testing.T) {
+}

@@ -81,9 +81,10 @@ func (b0 Delta_builder) Build() *Delta {
 
 type Entry struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_Targets     []byte                 `protobuf:"bytes,1,opt,name=targets"`
-	xxx_hidden_NoInsert    bool                   `protobuf:"varint,2,opt,name=no_insert,json=noInsert"`
-	xxx_hidden_NoUpdate    bool                   `protobuf:"varint,3,opt,name=no_update,json=noUpdate"`
+	xxx_hidden_Path        []byte                 `protobuf:"bytes,1,opt,name=path"`
+	xxx_hidden_Targets     []byte                 `protobuf:"bytes,2,opt,name=targets"`
+	xxx_hidden_NoInsert    bool                   `protobuf:"varint,3,opt,name=no_insert,json=noInsert"`
+	xxx_hidden_NoUpdate    bool                   `protobuf:"varint,4,opt,name=no_update,json=noUpdate"`
 	xxx_hidden_Kind        isEntry_Kind           `protobuf_oneof:"kind"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
@@ -114,6 +115,13 @@ func (x *Entry) ProtoReflect() protoreflect.Message {
 		return ms
 	}
 	return mi.MessageOf(x)
+}
+
+func (x *Entry) GetPath() []byte {
+	if x != nil {
+		return x.xxx_hidden_Path
+	}
+	return nil
 }
 
 func (x *Entry) GetTargets() []byte {
@@ -209,22 +217,30 @@ func (x *Entry) GetNested() *Delta {
 	return nil
 }
 
+func (x *Entry) SetPath(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_Path = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 5)
+}
+
 func (x *Entry) SetTargets(v []byte) {
 	if v == nil {
 		v = []byte{}
 	}
 	x.xxx_hidden_Targets = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 5)
 }
 
 func (x *Entry) SetNoInsert(v bool) {
 	x.xxx_hidden_NoInsert = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 5)
 }
 
 func (x *Entry) SetNoUpdate(v bool) {
 	x.xxx_hidden_NoUpdate = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 4)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 5)
 }
 
 func (x *Entry) SetDeleted(v bool) {
@@ -282,25 +298,32 @@ func (x *Entry) SetNested(v *Delta) {
 	x.xxx_hidden_Kind = &entry_Nested{v}
 }
 
-func (x *Entry) HasTargets() bool {
+func (x *Entry) HasPath() bool {
 	if x == nil {
 		return false
 	}
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
 }
 
-func (x *Entry) HasNoInsert() bool {
+func (x *Entry) HasTargets() bool {
 	if x == nil {
 		return false
 	}
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 1)
 }
 
-func (x *Entry) HasNoUpdate() bool {
+func (x *Entry) HasNoInsert() bool {
 	if x == nil {
 		return false
 	}
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
+func (x *Entry) HasNoUpdate() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
 }
 
 func (x *Entry) HasKind() bool {
@@ -374,18 +397,23 @@ func (x *Entry) HasNested() bool {
 	return ok
 }
 
-func (x *Entry) ClearTargets() {
+func (x *Entry) ClearPath() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
+	x.xxx_hidden_Path = nil
+}
+
+func (x *Entry) ClearTargets() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
 	x.xxx_hidden_Targets = nil
 }
 
 func (x *Entry) ClearNoInsert() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 1)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
 	x.xxx_hidden_NoInsert = false
 }
 
 func (x *Entry) ClearNoUpdate() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
 	x.xxx_hidden_NoUpdate = false
 }
 
@@ -442,12 +470,12 @@ func (x *Entry) ClearNested() {
 }
 
 const Entry_Kind_not_set_case case_Entry_Kind = 0
-const Entry_Deleted_case case_Entry_Kind = 4
-const Entry_Assigned_case case_Entry_Kind = 5
-const Entry_Merged_case case_Entry_Kind = 6
-const Entry_Copied_case case_Entry_Kind = 7
-const Entry_Scattered_case case_Entry_Kind = 8
-const Entry_Swapped_case case_Entry_Kind = 9
+const Entry_Deleted_case case_Entry_Kind = 5
+const Entry_Assigned_case case_Entry_Kind = 6
+const Entry_Merged_case case_Entry_Kind = 7
+const Entry_Copied_case case_Entry_Kind = 8
+const Entry_Scattered_case case_Entry_Kind = 9
+const Entry_Swapped_case case_Entry_Kind = 10
 const Entry_Edited_case case_Entry_Kind = 14
 const Entry_Nested_case case_Entry_Kind = 15
 
@@ -480,6 +508,9 @@ func (x *Entry) WhichKind() case_Entry_Kind {
 type Entry_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
+	// Path is the field path to the target field, encoded as a sequence of tag and wire type pairs.
+	// For example, the path to a field with tag 1 and type length-delimited is encoded as the varint 10 (1 << 3 | 2).
+	Path []byte
 	// List of target indices for the ops.
 	// String keys are length-prefixed and concatenated together.
 	Targets []byte
@@ -509,16 +540,20 @@ func (b0 Entry_builder) Build() *Entry {
 	m0 := &Entry{}
 	b, x := &b0, m0
 	_, _ = b, x
+	if b.Path != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 5)
+		x.xxx_hidden_Path = b.Path
+	}
 	if b.Targets != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 5)
 		x.xxx_hidden_Targets = b.Targets
 	}
 	if b.NoInsert != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 5)
 		x.xxx_hidden_NoInsert = *b.NoInsert
 	}
 	if b.NoUpdate != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 4)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 5)
 		x.xxx_hidden_NoUpdate = *b.NoUpdate
 	}
 	if b.Deleted != nil {
@@ -564,30 +599,30 @@ type isEntry_Kind interface {
 
 type entry_Deleted struct {
 	// Deleted op does not affected by no_insert or no_update.
-	Deleted bool `protobuf:"varint,4,opt,name=deleted,oneof"`
+	Deleted bool `protobuf:"varint,5,opt,name=deleted,oneof"`
 }
 
 type entry_Assigned struct {
-	Assigned []byte `protobuf:"bytes,5,opt,name=assigned,oneof"`
+	Assigned []byte `protobuf:"bytes,6,opt,name=assigned,oneof"`
 }
 
 type entry_Merged struct {
 	// Target fields must be message type.
 	// Bytes are parsed as the target message type and proto.Merge'd into the target field.
-	Merged []byte `protobuf:"bytes,6,opt,name=merged,oneof"`
+	Merged []byte `protobuf:"bytes,7,opt,name=merged,oneof"`
 }
 
 type entry_Copied struct {
-	Copied []byte `protobuf:"bytes,7,opt,name=copied,oneof"` // Index
+	Copied []byte `protobuf:"bytes,8,opt,name=copied,oneof"` // Index
 }
 
 type entry_Scattered struct {
-	Scattered []byte `protobuf:"bytes,8,opt,name=scattered,oneof"` // Index
+	Scattered []byte `protobuf:"bytes,9,opt,name=scattered,oneof"` // Index
 }
 
 type entry_Swapped struct {
 	// Swapped op does not affected by no_insert or no_update.
-	Swapped []byte `protobuf:"bytes,9,opt,name=swapped,oneof"` // Index
+	Swapped []byte `protobuf:"bytes,10,opt,name=swapped,oneof"` // Index
 }
 
 type entry_Edited struct {
@@ -746,17 +781,19 @@ const file_proto_diff_delta_proto_rawDesc = "" +
 	"\n" +
 	"\x16proto/diff/delta.proto\x12\x04diff\".\n" +
 	"\x05Delta\x12%\n" +
-	"\aentries\x18\x01 \x03(\v2\v.diff.EntryR\aentries\"\xda\x02\n" +
-	"\x05Entry\x12\x18\n" +
-	"\atargets\x18\x01 \x01(\fR\atargets\x12\x1b\n" +
-	"\tno_insert\x18\x02 \x01(\bR\bnoInsert\x12\x1b\n" +
-	"\tno_update\x18\x03 \x01(\bR\bnoUpdate\x12\x1a\n" +
-	"\adeleted\x18\x04 \x01(\bH\x00R\adeleted\x12\x1c\n" +
-	"\bassigned\x18\x05 \x01(\fH\x00R\bassigned\x12\x18\n" +
-	"\x06merged\x18\x06 \x01(\fH\x00R\x06merged\x12\x18\n" +
-	"\x06copied\x18\a \x01(\fH\x00R\x06copied\x12\x1e\n" +
-	"\tscattered\x18\b \x01(\fH\x00R\tscattered\x12\x1a\n" +
-	"\aswapped\x18\t \x01(\fH\x00R\aswapped\x12$\n" +
+	"\aentries\x18\x01 \x03(\v2\v.diff.EntryR\aentries\"\xee\x02\n" +
+	"\x05Entry\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\fR\x04path\x12\x18\n" +
+	"\atargets\x18\x02 \x01(\fR\atargets\x12\x1b\n" +
+	"\tno_insert\x18\x03 \x01(\bR\bnoInsert\x12\x1b\n" +
+	"\tno_update\x18\x04 \x01(\bR\bnoUpdate\x12\x1a\n" +
+	"\adeleted\x18\x05 \x01(\bH\x00R\adeleted\x12\x1c\n" +
+	"\bassigned\x18\x06 \x01(\fH\x00R\bassigned\x12\x18\n" +
+	"\x06merged\x18\a \x01(\fH\x00R\x06merged\x12\x18\n" +
+	"\x06copied\x18\b \x01(\fH\x00R\x06copied\x12\x1e\n" +
+	"\tscattered\x18\t \x01(\fH\x00R\tscattered\x12\x1a\n" +
+	"\aswapped\x18\n" +
+	" \x01(\fH\x00R\aswapped\x12$\n" +
 	"\x06edited\x18\x0e \x01(\v2\n" +
 	".diff.EditH\x00R\x06edited\x12%\n" +
 	"\x06nested\x18\x0f \x01(\v2\v.diff.DeltaH\x00R\x06nestedB\x06\n" +
