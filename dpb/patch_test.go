@@ -960,5 +960,198 @@ func TestPatchMap(t *testing.T) {
 	})
 }
 
-func TeatPatchPath(t *testing.T) {
+func TestPatchByPath(t *testing.T) {
+	t.Run("message", func(t *testing.T) {
+		t.Run("assign by field name", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetS_1("old")
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("s_1").Value())
+			d.SetAssigned(dpb.String("new"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetS_1("new")
+			x.PbEq(t, want, b)
+		})
+		t.Run("assign by int field number", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetS_1("old")
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.I(109).Value()) // field 109 = s_1
+			d.SetAssigned(dpb.String("new"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetS_1("new")
+			x.PbEq(t, want, b)
+		})
+		t.Run("assign by uint field number", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetS_1("old")
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.U(109).Value()) // field 109 = s_1
+			d.SetAssigned(dpb.String("new"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetS_1("new")
+			x.PbEq(t, want, b)
+		})
+		t.Run("delete by field name", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetS_1("foo")
+			a.SetS_2("bar")
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("s_1").Value())
+			d.SetDeleted(true)
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetS_2("bar")
+			x.PbEq(t, want, b)
+		})
+	})
+	t.Run("nested message", func(t *testing.T) {
+		t.Run("assign field in nested message", func(t *testing.T) {
+			sub := &sample.Value{}
+			sub.SetS_1("old")
+			a := &sample.Value{}
+			a.SetM_1(sub)
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("m_1").S("s_1").Value())
+			d.SetAssigned(dpb.String("new"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			wantSub := &sample.Value{}
+			wantSub.SetS_1("new")
+			want := &sample.Value{}
+			want.SetM_1(wantSub)
+			x.PbEq(t, want, b)
+		})
+		t.Run("assign field in nested message by field number", func(t *testing.T) {
+			sub := &sample.Value{}
+			sub.SetS_1("old")
+			a := &sample.Value{}
+			a.SetM_1(sub)
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.I(111).I(109).Value()) // m_1=111, s_1=109
+			d.SetAssigned(dpb.String("new"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want_sub := &sample.Value{}
+			want_sub.SetS_1("new")
+			want := &sample.Value{}
+			want.SetM_1(want_sub)
+			x.PbEq(t, want, b)
+		})
+	})
+	t.Run("list", func(t *testing.T) {
+		t.Run("assign element by int index", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetRS_1([]string{"foo", "bar", "baz"})
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("r_s_1").I(1).Value())
+			d.SetAssigned(dpb.String("NEW"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetRS_1([]string{"foo", "NEW", "baz"})
+			x.PbEq(t, want, b)
+		})
+		t.Run("assign element by negative int index", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetRS_1([]string{"foo", "bar", "baz"})
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("r_s_1").I(-1).Value()) // last element
+			d.SetAssigned(dpb.String("LAST"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetRS_1([]string{"foo", "bar", "LAST"})
+			x.PbEq(t, want, b)
+		})
+		t.Run("delete element by int index", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetRS_1([]string{"foo", "bar", "baz"})
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("r_s_1").I(1).Value())
+			d.SetDeleted(true)
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetRS_1([]string{"foo", "baz"})
+			x.PbEq(t, want, b)
+		})
+	})
+	t.Run("map", func(t *testing.T) {
+		t.Run("assign entry by string key", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetMSS(map[string]string{
+				"foo": "old",
+				"bar": "baz",
+			})
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("m_s_s").S("foo").Value())
+			d.SetAssigned(dpb.String("new"))
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetMSS(map[string]string{
+				"foo": "new",
+				"bar": "baz",
+			})
+			x.PbEq(t, want, b)
+		})
+		t.Run("delete entry by string key", func(t *testing.T) {
+			a := &sample.Value{}
+			a.SetMSS(map[string]string{
+				"foo": "old",
+				"bar": "baz",
+			})
+
+			d := &dpb.Entry{}
+			d.SetPath(dpb.P.S("m_s_s").S("foo").Value())
+			d.SetDeleted(true)
+
+			b, err := dpb.Patched(a, dpb.NewDelta(d))
+			x.NoError(t, err)
+
+			want := &sample.Value{}
+			want.SetMSS(map[string]string{
+				"bar": "baz",
+			})
+			x.PbEq(t, want, b)
+		})
+	})
 }

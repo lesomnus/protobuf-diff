@@ -213,7 +213,17 @@ func NavigateMessage(c protoreflect.Message, fd protoreflect.FieldDescriptor, se
 		return nil, nil, fmt.Errorf("invalid path segment type: %T", s)
 	}
 
-	return Navigate(c.Get(fd_), fd_, segments[1:])
+	v := c.Get(fd_)
+	switch {
+	case fd_.IsMap():
+		return Navigate(v.Map(), fd_, segments[1:])
+	case fd_.IsList():
+		return Navigate(v.List(), fd_, segments[1:])
+	case fd_.Kind() == protoreflect.MessageKind || fd_.Kind() == protoreflect.GroupKind:
+		return Navigate(v.Message(), fd_, segments[1:])
+	default:
+		return Navigate(v, fd_, segments[1:])
+	}
 }
 
 func NavigateList(c protoreflect.List, fd protoreflect.FieldDescriptor, segments []any) (any, protoreflect.FieldDescriptor, error) {

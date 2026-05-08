@@ -38,6 +38,14 @@ func StringKeys(vs ...string) Targets {
 	return Targets{bs}
 }
 
+func UnsignedKeys(vs ...uint) Targets {
+	bs := []byte{}
+	for _, v := range vs {
+		bs = protowire.AppendVarint(bs, uint64(v))
+	}
+	return Targets{bs}
+}
+
 func FixedKeys[T constraints.Integer](vs ...T) Targets {
 	bs := []byte{}
 	for _, v := range vs {

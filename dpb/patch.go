@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/lesomnus/protobuf-diff/target"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -47,6 +48,12 @@ func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *D
 
 func (o PatchOption) patch(p protoreflect.Value, v any, fd protoreflect.FieldDescriptor, entry *Entry) error {
 	segments := slices.Collect(entry.Path().Seq())
+
+	var s any
+	if len(entry.GetTargets()) == 0 {
+		segments, s = segments[:len(segments)-1], segments[len(segments)-1]
+	}
+
 	v, fd, err := Navigate(v, fd, segments)
 	if err != nil {
 		return fmt.Errorf("navigate path: %w", err)
@@ -54,10 +61,55 @@ func (o PatchOption) patch(p protoreflect.Value, v any, fd protoreflect.FieldDes
 
 	switch v := v.(type) {
 	case protoreflect.Message:
+		switch s := s.(type) {
+		case string:
+			fd := v.Descriptor().Fields().ByName(protoreflect.Name(s))
+			if fd == nil {
+				return nil
+			}
+			entry.AppendTargets(target.Fields(fd.Number()))
+
+		case int:
+			entry.AppendTargets(target.Fields(protoreflect.FieldNumber(s)))
+
+		case uint:
+			entry.AppendTargets(target.Fields(protoreflect.FieldNumber(s)))
+
+		case nil:
+		default:
+			return fmt.Errorf("invalid target segment type: %T", s)
+		}
 		return o.patchMessage(v, entry)
+
 	case protoreflect.List:
+		switch s := s.(type) {
+		case int:
+			entry.AppendTargets(target.Indices(s))
+
+		case uint:
+			entry.AppendTargets(target.Indices(int(s)))
+
+		case nil:
+		default:
+			return fmt.Errorf("invalid target segment type for list: %T", s)
+		}
 		return o.patchList(v, fd, entry)
+
 	case protoreflect.Map:
+		switch s := s.(type) {
+		case string:
+			entry.AppendTargets(target.StringKeys(s))
+
+		case int:
+			entry.AppendTargets(target.SignedKeys(s))
+
+		case uint:
+			entry.AppendTargets(target.UnsignedKeys(s))
+
+		case nil:
+		default:
+			return fmt.Errorf("invalid target segment type: %T", s)
+		}
 		return o.patchMap(v, fd, entry)
 
 	default:
