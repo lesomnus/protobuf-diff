@@ -38,7 +38,7 @@ func (o PatchOption) Patch(v proto.Message, delta *Delta) error {
 
 func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *Delta) error {
 	for i, entry := range delta.GetEntries() {
-		if err := o.patch(protoreflect.ValueOf(nil), v, fd, entry); err != nil {
+		if err := o.patch(v, fd, entry); err != nil {
 			return fmt.Errorf("entry[%d]: %w", i, err)
 		}
 	}
@@ -46,7 +46,7 @@ func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *D
 	return nil
 }
 
-func (o PatchOption) patch(p protoreflect.Value, v any, fd protoreflect.FieldDescriptor, entry *Entry) error {
+func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *Entry) error {
 	segments := slices.Collect(entry.Path().Seq())
 
 	var s any
