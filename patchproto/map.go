@@ -1,16 +1,17 @@
-package dpb
+package patchproto
 
 import (
 	"errors"
 	"fmt"
 
+	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/ref"
 	"github.com/lesomnus/protobuf-diff/target"
 	"google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescriptor, entry *Entry) error {
+func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
 	kd := fd.MapKey()
 	keys, err := target.DecodeKeys(entry.GetTargets(), kd.Kind())
 	if err != nil {
@@ -35,7 +36,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 	}
 
 	switch entry.WhichKind() {
-	case Entry_Deleted_case:
+	case dpb.Entry_Deleted_case:
 		if entry.GetDeleted() {
 			op = func(k protoreflect.MapKey) error {
 				c.Clear(k)
@@ -43,7 +44,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			}
 		}
 
-	case Entry_Assigned_case:
+	case dpb.Entry_Assigned_case:
 		var v protoreflect.Value
 		op = func(k protoreflect.MapKey) error {
 			if !check(k) {
@@ -61,7 +62,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			return nil
 		}
 
-	case Entry_Merged_case:
+	case dpb.Entry_Merged_case:
 		if vd.Kind() != protoreflect.MessageKind {
 			return fmt.Errorf("value must be message type %q", vd.FullName())
 		}
@@ -84,7 +85,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			return nil
 		}
 
-	case Entry_Copied_case:
+	case dpb.Entry_Copied_case:
 		src, err := ref.DecodeKey(entry.GetCopied(), kd.Kind())
 		if err != nil {
 			return fmt.Errorf("copy: unmarshal source key: %w", err)
@@ -113,7 +114,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			}
 		}
 
-	case Entry_Scattered_case:
+	case dpb.Entry_Scattered_case:
 		src, err := ref.DecodeKey(entry.GetScattered(), kd.Kind())
 		if err != nil {
 			return fmt.Errorf("scatter: unmarshal source key: %w", err)
@@ -146,7 +147,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			return nil
 		}
 
-	case Entry_Swapped_case:
+	case dpb.Entry_Swapped_case:
 		src, err := ref.DecodeKey(entry.GetSwapped(), kd.Kind())
 		if err != nil {
 			return fmt.Errorf("swap: unmarshal source key: %w", err)
@@ -164,7 +165,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			return nil
 		}
 
-	case Entry_Nested_case:
+	case dpb.Entry_Nested_case:
 		delta := entry.GetNested()
 		kind := vd.Kind()
 		if !(kind == protoreflect.MessageKind || kind == protoreflect.GroupKind) {
@@ -185,7 +186,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			return nil
 		}
 
-	case Entry_Edited_case:
+	case dpb.Entry_Edited_case:
 		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
 
 	default:

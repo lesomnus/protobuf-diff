@@ -1,9 +1,10 @@
-package dpb
+package patchproto
 
 import (
 	"errors"
 	"fmt"
 
+	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/ref"
 	"github.com/lesomnus/protobuf-diff/target"
 	"google.golang.org/protobuf/proto"
@@ -11,7 +12,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
+func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) error {
 	targets, err := target.DecodeFieldNumbers(entry.GetTargets())
 	if err != nil {
 		return fmt.Errorf("decode targets: %w", err)
@@ -45,7 +46,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 	}
 
 	switch entry.WhichKind() {
-	case Entry_Deleted_case:
+	case dpb.Entry_Deleted_case:
 		if entry.GetDeleted() {
 			op = func(fd protoreflect.FieldDescriptor) error {
 				c.Clear(fd)
@@ -53,7 +54,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 			}
 		}
 
-	case Entry_Assigned_case:
+	case dpb.Entry_Assigned_case:
 		op = func(fd protoreflect.FieldDescriptor) error {
 			if !check(fd) {
 				return nil
@@ -68,7 +69,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 			return nil
 		}
 
-	case Entry_Merged_case:
+	case dpb.Entry_Merged_case:
 		var v proto.Message
 		op = func(fd protoreflect.FieldDescriptor) error {
 			if !check(fd) {
@@ -90,7 +91,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 			return nil
 		}
 
-	case Entry_Copied_case:
+	case dpb.Entry_Copied_case:
 		k, err := ref.DecodeField(entry.GetCopied())
 		if err != nil {
 			return fmt.Errorf("copy: unmarshal source field number: %w", err)
@@ -124,7 +125,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 			}
 		}
 
-	case Entry_Scattered_case:
+	case dpb.Entry_Scattered_case:
 		k, err := ref.DecodeField(entry.GetScattered())
 		if err != nil {
 			return fmt.Errorf("scatter: unmarshal source field number: %w", err)
@@ -163,7 +164,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 			}
 		}
 
-	case Entry_Swapped_case:
+	case dpb.Entry_Swapped_case:
 		target, err := ref.DecodeField(entry.GetSwapped())
 		if err != nil {
 			return fmt.Errorf("swap: unmarshal target field number: %w", err)
@@ -193,10 +194,10 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *Entry) error {
 			return nil
 		}
 
-	case Entry_Edited_case:
+	case dpb.Entry_Edited_case:
 		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
 
-	case Entry_Nested_case:
+	case dpb.Entry_Nested_case:
 		delta := entry.GetNested()
 		op = func(fd protoreflect.FieldDescriptor) error {
 			if !check(fd) {

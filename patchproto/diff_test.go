@@ -1,21 +1,21 @@
-package dpb_test
+package patchproto_test
 
 import (
 	"testing"
 
-	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/internal/sample"
 	"github.com/lesomnus/protobuf-diff/internal/x"
+	"github.com/lesomnus/protobuf-diff/patchproto"
 )
 
 // diffRoundtrip checks that Patch(from, Diff(from, to)) == to.
 func diffRoundtrip(t *testing.T, from, to *sample.Value) {
 	t.Helper()
 
-	delta, err := dpb.Diff(from, to)
+	delta, err := patchproto.Diff(from, to)
 	x.NoError(t, err)
 
-	got, err := dpb.Patched(from, delta)
+	got, err := patchproto.Patched(from, delta)
 	x.NoError(t, err)
 	x.PbEq(t, to, got)
 }
@@ -138,7 +138,7 @@ func TestDiffMessage(t *testing.T) {
 		diffRoundtrip(t, from, &sample.Value{})
 	})
 	t.Run("empty to empty", func(t *testing.T) {
-		delta, err := dpb.Diff(&sample.Value{}, &sample.Value{})
+		delta, err := patchproto.Diff(&sample.Value{}, &sample.Value{})
 		x.NoError(t, err)
 		if len(delta.GetEntries()) != 0 {
 			t.Errorf("expected empty delta, got %d entries", len(delta.GetEntries()))

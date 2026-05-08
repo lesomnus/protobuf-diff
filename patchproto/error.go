@@ -1,4 +1,4 @@
-package dpb
+package patchproto
 
 import "google.golang.org/protobuf/reflect/protoreflect"
 

@@ -1,10 +1,11 @@
-package dpb
+package patchproto
 
 import (
 	"bytes"
 	"fmt"
 	"math"
 
+	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/target"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -12,25 +13,25 @@ import (
 )
 
 type Differ interface {
-	Diff(from, to proto.Message) (*Delta, error)
+	Diff(from, to proto.Message) (*dpb.Delta, error)
 }
 
 type DiffOption struct{}
 
-func Diff[T proto.Message](from, to T) (*Delta, error) {
+func Diff[T proto.Message](from, to T) (*dpb.Delta, error) {
 	return DiffOption{}.Diff(from, to)
 }
 
-func (o DiffOption) Diff(from, to proto.Message) (*Delta, error) {
+func (o DiffOption) Diff(from, to proto.Message) (*dpb.Delta, error) {
 	entries, err := o.diffMessage(from.ProtoReflect(), to.ProtoReflect())
 	if err != nil {
 		return nil, err
 	}
-	return NewDelta(entries...), nil
+	return dpb.NewDelta(entries...), nil
 }
 
-func (o DiffOption) diffMessage(from, to protoreflect.Message) ([]*Entry, error) {
-	var entries []*Entry
+func (o DiffOption) diffMessage(from, to protoreflect.Message) ([]*dpb.Entry, error) {
+	var entries []*dpb.Entry
 	fields := from.Descriptor().Fields()
 	for i := range fields.Len() {
 		fd := fields.Get(i)
@@ -46,7 +47,7 @@ func (o DiffOption) diffMessage(from, to protoreflect.Message) ([]*Entry, error)
 	return entries, nil
 }
 
-func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.FieldDescriptor) ([]*Entry, error) {
+func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.FieldDescriptor) ([]*dpb.Entry, error) {
 	lhs_has := from.Has(fd)
 	rhs_has := to.Has(fd)
 	if !lhs_has && !rhs_has {
@@ -54,10 +55,10 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 	}
 
 	if lhs_has && !rhs_has {
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.AppendTargets(target.Fields(fd.Number()))
 		e.SetDeleted(true)
-		return []*Entry{e}, nil
+		return []*dpb.Entry{e}, nil
 	}
 
 	if fd.IsMap() {
@@ -68,10 +69,10 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 		if len(nested) == 0 {
 			return nil, nil
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetNested(NewDelta(nested...))
-		return []*Entry{e}, nil
+		e.SetNested(dpb.NewDelta(nested...))
+		return []*dpb.Entry{e}, nil
 	}
 
 	if fd.IsList() {
@@ -82,10 +83,10 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 		if len(nested) == 0 {
 			return nil, nil
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetNested(NewDelta(nested...))
-		return []*Entry{e}, nil
+		e.SetNested(dpb.NewDelta(nested...))
+		return []*dpb.Entry{e}, nil
 	}
 
 	kind := fd.Kind()
@@ -95,10 +96,10 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 			if err != nil {
 				return nil, err
 			}
-			e := &Entry{}
+			e := &dpb.Entry{}
 			e.AppendTargets(target.Fields(fd.Number()))
 			e.SetAssigned(b)
-			return []*Entry{e}, nil
+			return []*dpb.Entry{e}, nil
 		}
 		nested, err := o.diffMessage(from.Get(fd).Message(), to.Get(fd).Message())
 		if err != nil {
@@ -107,10 +108,10 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 		if len(nested) == 0 {
 			return nil, nil
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetNested(NewDelta(nested...))
-		return []*Entry{e}, nil
+		e.SetNested(dpb.NewDelta(nested...))
+		return []*dpb.Entry{e}, nil
 	}
 
 	lhs_v := from.Get(fd)
@@ -123,14 +124,14 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 	if err != nil {
 		return nil, err
 	}
-	e := &Entry{}
+	e := &dpb.Entry{}
 	e.AppendTargets(target.Fields(fd.Number()))
 	e.SetAssigned(b)
-	return []*Entry{e}, nil
+	return []*dpb.Entry{e}, nil
 }
 
-func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDescriptor) ([]*Entry, error) {
-	var entries []*Entry
+func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDescriptor) ([]*dpb.Entry, error) {
+	var entries []*dpb.Entry
 	lhs_l := from.Len()
 	rhs_l := to.Len()
 
@@ -139,7 +140,7 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 		for i := range indices {
 			indices[i] = rhs_l + i
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.AppendTargets(target.Indices(indices...))
 		e.SetDeleted(true)
 		entries = append(entries, e)
@@ -157,9 +158,9 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 				return nil, fmt.Errorf("[%d]: %w", i, err)
 			}
 			if len(nested) > 0 {
-				e := &Entry{}
+				e := &dpb.Entry{}
 				e.AppendTargets(target.Indices(i))
-				e.SetNested(NewDelta(nested...))
+				e.SetNested(dpb.NewDelta(nested...))
 				entries = append(entries, e)
 			}
 			continue
@@ -172,7 +173,7 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 		if err != nil {
 			return nil, fmt.Errorf("[%d]: %w", i, err)
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.AppendTargets(target.Indices(i))
 		e.SetAssigned(b)
 		entries = append(entries, e)
@@ -183,7 +184,7 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 		if err != nil {
 			return nil, fmt.Errorf("[%d]: %w", i, err)
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.SetNoUpdate(true)
 		e.AppendTargets(target.Indices(-1))
 		e.SetAssigned(b)
@@ -193,10 +194,10 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 	return entries, nil
 }
 
-func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDescriptor) ([]*Entry, error) {
+func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDescriptor) ([]*dpb.Entry, error) {
 	kd := fd.MapKey()
 	vd := fd.MapValue()
-	var entries []*Entry
+	var entries []*dpb.Entry
 
 	var keys_deleted []protoreflect.MapKey
 	from.Range(func(k protoreflect.MapKey, _ protoreflect.Value) bool {
@@ -210,7 +211,7 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 		if err != nil {
 			return nil, err
 		}
-		e := &Entry{}
+		e := &dpb.Entry{}
 		e.SetTargets(bs)
 		e.SetDeleted(true)
 		entries = append(entries, e)
@@ -242,9 +243,9 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 				if err != nil {
 					return nil, err
 				}
-				e := &Entry{}
+				e := &dpb.Entry{}
 				e.SetTargets(bs)
-				e.SetNested(NewDelta(nested...))
+				e.SetNested(dpb.NewDelta(nested...))
 				entries = append(entries, e)
 			} else {
 				b, err := encodeValue(d.rhs_v, vd)
@@ -255,7 +256,7 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 				if err != nil {
 					return nil, err
 				}
-				e := &Entry{}
+				e := &dpb.Entry{}
 				e.SetTargets(bs)
 				e.SetAssigned(b)
 				entries = append(entries, e)
@@ -274,7 +275,7 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 			if err != nil {
 				return nil, err
 			}
-			e := &Entry{}
+			e := &dpb.Entry{}
 			e.SetTargets(bs)
 			e.SetAssigned(b)
 			entries = append(entries, e)
@@ -313,37 +314,37 @@ func scalarValuesEqual(a, b protoreflect.Value, kind protoreflect.Kind) bool {
 func encodeValue(v protoreflect.Value, fd protoreflect.FieldDescriptor) ([]byte, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
-		return Bool(v.Bool()), nil
+		return dpb.Bool(v.Bool()), nil
 	case protoreflect.EnumKind:
-		return Enum(v.Enum()), nil
+		return dpb.Enum(v.Enum()), nil
 	case protoreflect.Int32Kind:
-		return Int(v.Int()), nil
+		return dpb.Int(v.Int()), nil
 	case protoreflect.Sint32Kind:
-		return Signed(v.Int()), nil
+		return dpb.Signed(v.Int()), nil
 	case protoreflect.Uint32Kind:
-		return Int(v.Uint()), nil
+		return dpb.Int(v.Uint()), nil
 	case protoreflect.Int64Kind:
-		return Int(v.Int()), nil
+		return dpb.Int(v.Int()), nil
 	case protoreflect.Sint64Kind:
-		return Signed(v.Int()), nil
+		return dpb.Signed(v.Int()), nil
 	case protoreflect.Uint64Kind:
-		return Int(v.Uint()), nil
+		return dpb.Int(v.Uint()), nil
 	case protoreflect.Sfixed32Kind:
 		return protowire.AppendFixed32(nil, uint32(v.Int())), nil
 	case protoreflect.Fixed32Kind:
 		return protowire.AppendFixed32(nil, uint32(v.Uint())), nil
 	case protoreflect.FloatKind:
-		return Float(float32(v.Float())), nil
+		return dpb.Float(float32(v.Float())), nil
 	case protoreflect.Sfixed64Kind:
 		return protowire.AppendFixed64(nil, uint64(v.Int())), nil
 	case protoreflect.Fixed64Kind:
 		return protowire.AppendFixed64(nil, v.Uint()), nil
 	case protoreflect.DoubleKind:
-		return Double(v.Float()), nil
+		return dpb.Double(v.Float()), nil
 	case protoreflect.StringKind:
-		return String(v.String()), nil
+		return dpb.String(v.String()), nil
 	case protoreflect.BytesKind:
-		return Bytes(v.Bytes()), nil
+		return dpb.Bytes(v.Bytes()), nil
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		b, err := proto.Marshal(v.Message().Interface())
 		if err != nil {

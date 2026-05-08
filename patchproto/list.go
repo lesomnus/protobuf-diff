@@ -1,16 +1,17 @@
-package dpb
+package patchproto
 
 import (
 	"fmt"
 	"slices"
 
+	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/ref"
 	"github.com/lesomnus/protobuf-diff/target"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
-func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescriptor, entry *Entry) error {
+func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
 	targets, err := target.DecodeIndices(entry.GetTargets())
 	if err != nil {
 		return fmt.Errorf("decode targets: %w", err)
@@ -77,7 +78,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 	}
 
 	switch entry.WhichKind() {
-	case Entry_Deleted_case:
+	case dpb.Entry_Deleted_case:
 		targets_set := make(map[int]struct{}, len(targets))
 		for _, i := range targets {
 			i, ok := normal(i)
@@ -98,7 +99,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		}
 		c.Truncate(j)
 
-	case Entry_Assigned_case:
+	case dpb.Entry_Assigned_case:
 		v, err := decodeValue(entry.GetAssigned(), fd)
 		if err != nil {
 			return fmt.Errorf("decode: %w", err)
@@ -116,7 +117,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			}
 		}
 
-	case Entry_Copied_case:
+	case dpb.Entry_Copied_case:
 		k, err := ref.DecodeIndex(entry.GetCopied())
 		if err != nil {
 			return fmt.Errorf("copy: unmarshal source index: %w", err)
@@ -143,7 +144,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			}
 		}
 
-	case Entry_Scattered_case:
+	case dpb.Entry_Scattered_case:
 		k, err := ref.DecodeIndex(entry.GetScattered())
 		if err != nil {
 			return fmt.Errorf("scatter: unmarshal source index: %w", err)
@@ -216,7 +217,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		}
 		c.Truncate(l - 1)
 
-	case Entry_Swapped_case:
+	case dpb.Entry_Swapped_case:
 		k, err := ref.DecodeIndex(entry.GetSwapped())
 		if err != nil {
 			return fmt.Errorf("swap: unmarshal source index: %w", err)
@@ -240,7 +241,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		}
 		c.Set(k, v)
 
-	case Entry_Nested_case:
+	case dpb.Entry_Nested_case:
 		delta := entry.GetNested()
 
 		kind := fd.Kind()

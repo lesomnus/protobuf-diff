@@ -1,4 +1,4 @@
-package dpb
+package patchproto
 
 import (
 	"errors"
@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/target"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -14,14 +15,14 @@ import (
 )
 
 type Patcher interface {
-	Patch(v proto.Message, delta *Delta) error
+	Patch(v proto.Message, delta *dpb.Delta) error
 }
 
-func Patch(v proto.Message, delta *Delta) error {
+func Patch(v proto.Message, delta *dpb.Delta) error {
 	return PatchOption{}.Patch(v, delta)
 }
 
-func Patched[T proto.Message](v T, delta *Delta) (T, error) {
+func Patched[T proto.Message](v T, delta *dpb.Delta) (T, error) {
 	v = proto.CloneOf(v)
 	if err := Patch(v, delta); err != nil {
 		var z T
@@ -32,11 +33,11 @@ func Patched[T proto.Message](v T, delta *Delta) (T, error) {
 
 type PatchOption struct{}
 
-func (o PatchOption) Patch(v proto.Message, delta *Delta) error {
+func (o PatchOption) Patch(v proto.Message, delta *dpb.Delta) error {
 	return o.PatchField(v.ProtoReflect(), nil, delta)
 }
 
-func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *Delta) error {
+func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *dpb.Delta) error {
 	for i, entry := range delta.GetEntries() {
 		if err := o.patch(v, fd, entry); err != nil {
 			return fmt.Errorf("entry[%d]: %w", i, err)
@@ -46,7 +47,7 @@ func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *D
 	return nil
 }
 
-func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *Entry) error {
+func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
 	segments := slices.Collect(entry.Path().Seq())
 
 	var s any
