@@ -31,6 +31,14 @@ func Eq[T any](t *testing.T, expected, actual T) {
 	t.Fatalf("unexpected value: got %v, want %v", actual, expected)
 }
 
+func NotNil(t *testing.T, value any) {
+	t.Helper()
+	if value != nil {
+		return
+	}
+	t.Fatal("expected non-nil value, got nil")
+}
+
 func Same(t *testing.T, expected, actual any) {
 	t.Helper()
 	if expected == actual {
