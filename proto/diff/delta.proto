@@ -9,6 +9,8 @@ message Delta {
 }
 
 message Entry {
+  // If no path nor targets are specified, the op applies to the root.
+
   // Path is the field path to the target field, encoded as a sequence of tag and wire type pairs.
   // For example, the path to a field with tag 1 and type length-delimited is encoded as the varint 10 (1 << 3 | 2).
   // If no targets are specified, the last segment will be the target field; otherwise, the last segment will be the parent of the target field.
