@@ -29,9 +29,29 @@ func WithTypes(r protoregistry.MessageTypeResolver) Option {
 	}
 }
 
+// Frame holds the value and field descriptor at the cursor position, used to
+// represent the state before or after an entry is applied.
+type Frame struct {
+	Descriptor protoreflect.FieldDescriptor
+	Value      protoreflect.Value
+}
+
+func (f Frame) String() string {
+	if !f.Value.IsValid() {
+		return "<nil>"
+	}
+	if f.Descriptor != nil {
+		switch f.Descriptor.Kind() {
+		case protoreflect.MessageKind, protoreflect.GroupKind:
+			return fmt.Sprint(f.Value.Message().Interface())
+		}
+	}
+	return fmt.Sprint(f.Value.Interface())
+}
+
 // WithHook registers a hook that is called each time a field is modified.
-// The hook receives the path of PathEntries leading to the modified field.
-func WithHook(h func([]dpb.PathEntry, *dpb.Entry)) Option {
+// The hook receives the path, the before and after frames, and the entry.
+func WithHook(h func([]dpb.PathEntry, dpb.Frame, dpb.Frame, *dpb.Entry)) Option {
 	return func(o *PatchOption) {
 		if o.cursor == nil {
 			o.cursor = &dpb.Cursor{}
@@ -84,10 +104,10 @@ func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
 	return func() { o.cursor.Pop() }
 }
 
-// cursorNotify fires all hooks with the current cursor path and the entry being applied.
-func (o PatchOption) cursorNotify(entry *dpb.Entry) {
+// cursorNotify fires all hooks with the current cursor path, before/after frames, and the entry.
+func (o PatchOption) cursorNotify(before, after dpb.Frame, entry *dpb.Entry) {
 	if o.cursor != nil {
-		o.cursor.Notify(entry)
+		o.cursor.Notify(before, after, entry)
 	}
 }
 

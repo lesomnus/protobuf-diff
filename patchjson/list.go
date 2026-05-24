@@ -71,7 +71,7 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 	}
 
 	// notify_insert fires hooks for each user-specified insertion index.
-	notify_insert := func() {
+	notify_insert := func(val any) {
 		for _, i := range indices {
 			if i < -1-l || i > l {
 				continue
@@ -83,7 +83,7 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 				idx = l
 			}
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: idx})
-			o.cursorNotify(entry)
+			o.cursorNotify(Frame{}, Frame{Value: val}, entry)
 			leave()
 		}
 	}
@@ -106,7 +106,7 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 		for i, u := range list {
 			if _, ok := targets_set[i]; ok {
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(Frame{Value: u}, Frame{}, entry)
 				leave()
 				continue
 			}
@@ -123,16 +123,17 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 
 		if entry.GetNoUpdate() {
 			splice(val)
-			notify_insert()
+			notify_insert(val)
 		} else {
 			for _, i := range indices {
 				i, ok := normal(i)
 				if !ok {
 					continue
 				}
+				before := Frame{Value: list[i]}
 				list[i] = val
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(before, Frame{Value: list[i]}, entry)
 				leave()
 			}
 		}
@@ -150,16 +151,17 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 
 		if entry.GetNoUpdate() {
 			splice(val)
-			notify_insert()
+			notify_insert(val)
 		} else {
 			for _, i := range indices {
 				i, ok := normal(i)
 				if !ok {
 					continue
 				}
+				before := Frame{Value: list[i]}
 				list[i] = val
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(before, Frame{Value: list[i]}, entry)
 				leave()
 			}
 		}
@@ -224,9 +226,9 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 			list = final
 			set(list)
 
-			notify_insert()
+			notify_insert(val)
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-			o.cursorNotify(entry)
+			o.cursorNotify(Frame{Value: val}, Frame{}, entry)
 			leave()
 		} else {
 			for _, i := range indices {
@@ -234,9 +236,10 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 				if !ok {
 					continue
 				}
+				before := Frame{Value: list[i]}
 				list[i] = val
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(before, Frame{Value: list[i]}, entry)
 				leave()
 			}
 			w := make([]any, 0, l-1)
@@ -250,7 +253,7 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 			set(list)
 
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-			o.cursorNotify(entry)
+			o.cursorNotify(Frame{Value: val}, Frame{}, entry)
 			leave()
 		}
 
@@ -264,20 +267,22 @@ func (o PatchOption) patchList(list []any, set func(any), entry *dpb.Entry) erro
 			return nil
 		}
 
+		kBefore := list[k]
 		tmp := list[k]
 		for _, i := range indices {
 			i, ok := normal(i)
 			if !ok {
 				continue
 			}
+			before := Frame{Value: list[i]}
 			list[i], tmp = tmp, list[i]
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-			o.cursorNotify(entry)
+			o.cursorNotify(before, Frame{Value: list[i]}, entry)
 			leave()
 		}
 		list[k] = tmp
 		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-		o.cursorNotify(entry)
+		o.cursorNotify(Frame{Value: kBefore}, Frame{Value: list[k]}, entry)
 		leave()
 
 	case dpb.Entry_Nested_case:

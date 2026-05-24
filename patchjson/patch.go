@@ -18,12 +18,39 @@ type Option func(*PatchOption)
 
 // WithHook registers a hook that is called each time a value is modified.
 // The hook receives the path of PathEntries leading to the modified value.
-func WithHook(h func([]dpb.PathEntry, *dpb.Entry)) Option {
+func WithHook(h func(pe []dpb.PathEntry, before, after dpb.Frame, entry *dpb.Entry)) Option {
 	return func(o *PatchOption) {
 		if o.cursor == nil {
 			o.cursor = &dpb.Cursor{}
 		}
 		o.cursor.Hooks = append(o.cursor.Hooks, h)
+	}
+}
+
+type Frame struct {
+	Value any
+}
+
+func (f Frame) String() string {
+	b, _ := json.Marshal(f.Value)
+	return string(b)
+}
+
+func (f Frame) Apply(entry *dpb.Entry) (dpb.Frame, error) {
+	switch entry.WhichKind() {
+	case dpb.Entry_Assigned_case:
+		v, err := decodeValue(entry.GetAssigned())
+		if err != nil {
+			return nil, fmt.Errorf("apply: %w", err)
+		}
+		return Frame{Value: v}, nil
+	case dpb.Entry_Deleted_case:
+		if entry.GetDeleted() {
+			return Frame{}, nil
+		}
+		return f, nil
+	default:
+		return nil, fmt.Errorf("Apply: not implemented for %q", entry.WhichKind())
 	}
 }
 
@@ -77,9 +104,9 @@ func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
 }
 
 // cursorNotify fires all hooks with the current cursor path and entry.
-func (o PatchOption) cursorNotify(entry *dpb.Entry) {
+func (o PatchOption) cursorNotify(before, after dpb.Frame, entry *dpb.Entry) {
 	if o.cursor != nil {
-		o.cursor.Notify(entry)
+		o.cursor.Notify(before, after, entry)
 	}
 }
 

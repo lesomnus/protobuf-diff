@@ -14,7 +14,7 @@ import (
 // collectHook returns a WithHook option and a pointer to the collected paths.
 func collectHook() (patchproto.Option, *[][]dpb.PathEntry) {
 	var paths [][]dpb.PathEntry
-	opt := patchproto.WithHook(func(p []dpb.PathEntry, _ *dpb.Entry) {
+	opt := patchproto.WithHook(func(p []dpb.PathEntry, _, _ dpb.Frame, _ *dpb.Entry) {
 		cp := make([]dpb.PathEntry, len(p))
 		copy(cp, p)
 		paths = append(paths, cp)

@@ -78,7 +78,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 	}
 
 	// notify_insert fires hooks for each user-specified insertion index.
-	notify_insert := func() {
+	notify_insert := func(v protoreflect.Value) {
 		for _, i := range targets {
 			if i < -1-l || i > l {
 				continue
@@ -90,7 +90,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 				idx = l
 			}
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: idx})
-			o.cursorNotify(entry)
+			o.cursorNotify(Frame{Descriptor: fd}, Frame{Descriptor: fd, Value: v}, entry)
 			leave()
 		}
 	}
@@ -110,7 +110,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		for i := range l {
 			if _, ok := targets_set[i]; ok {
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(Frame{Descriptor: fd, Value: c.Get(i)}, Frame{Descriptor: fd}, entry)
 				leave()
 				continue
 			}
@@ -127,16 +127,17 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 
 		if entry.GetNoUpdate() {
 			splice(v)
-			notify_insert()
+			notify_insert(v)
 		} else {
 			for _, i := range targets {
 				i, ok := normal(i)
 				if !ok {
 					continue
 				}
+				before := Frame{Descriptor: fd, Value: c.Get(i)}
 				c.Set(i, v)
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
 				leave()
 			}
 		}
@@ -158,16 +159,17 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		v := c.Get(k)
 		if entry.GetNoUpdate() {
 			splice(v)
-			notify_insert()
+			notify_insert(v)
 		} else {
 			for _, i := range targets {
 				i, ok := normal(i)
 				if !ok {
 					continue
 				}
+				before := Frame{Descriptor: fd, Value: c.Get(i)}
 				c.Set(i, v)
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
 				leave()
 			}
 		}
@@ -232,10 +234,10 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 				c.Set(i, c.Get(i+1))
 			}
 
-			notify_insert()
+			notify_insert(v)
 			// Also notify for the source index that was removed.
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-			o.cursorNotify(entry)
+			o.cursorNotify(Frame{Descriptor: fd, Value: v}, Frame{Descriptor: fd}, entry)
 			leave()
 		} else {
 			for _, i := range targets {
@@ -243,9 +245,10 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 				if !ok {
 					continue
 				}
+				before := Frame{Descriptor: fd, Value: c.Get(i)}
 				c.Set(i, v)
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(entry)
+				o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
 				leave()
 			}
 			for i := k; i < l-1; i++ {
@@ -253,7 +256,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			}
 			// Notify for the source index that was removed.
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-			o.cursorNotify(entry)
+			o.cursorNotify(Frame{Descriptor: fd, Value: v}, Frame{Descriptor: fd}, entry)
 			leave()
 		}
 		c.Truncate(l - 1)
@@ -269,6 +272,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			return nil
 		}
 
+		kBefore := c.Get(k)
 		v := c.Get(k)
 		for _, i := range targets {
 			i, ok := normal(i)
@@ -276,16 +280,17 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 				continue
 			}
 
+			before := Frame{Descriptor: fd, Value: c.Get(i)}
 			w := c.Get(i)
 			c.Set(i, v)
 			v = w
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-			o.cursorNotify(entry)
+			o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
 			leave()
 		}
 		c.Set(k, v)
 		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-		o.cursorNotify(entry)
+		o.cursorNotify(Frame{Descriptor: fd, Value: kBefore}, Frame{Descriptor: fd, Value: c.Get(k)}, entry)
 		leave()
 
 	case dpb.Entry_Nested_case:

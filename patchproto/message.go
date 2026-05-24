@@ -242,11 +242,12 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 		}
 
 		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: string(fd.Name()), Index: int(fd.Number())})
+		before := Frame{Descriptor: fd, Value: c.Get(fd)}
 		err := op(fd)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("[%d]: %w", i, err))
 		} else if notify_leaf {
-			o.cursorNotify(entry)
+			o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(fd)}, entry)
 		}
 		leave()
 	}

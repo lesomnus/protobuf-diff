@@ -130,7 +130,8 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 
 	case dpb.Entry_Scattered_case:
 		src := ref.DecodeString(entry.GetScattered())
-		srcVal, exists := m[src]
+		src_v, exists := m[src]
+		src_before := Frame{Value: src_v}
 		if !exists {
 			op = func(k string) error {
 				if !check(k) {
@@ -144,7 +145,7 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 				if !check(k) {
 					return nil
 				}
-				m[k] = srcVal
+				m[k] = src_v
 				return nil
 			}
 			after = func() error {
@@ -153,13 +154,14 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 			}
 			after_notify = func() {
 				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: src})
-				o.cursorNotify(entry)
+				o.cursorNotify(src_before, Frame{}, entry)
 				leave()
 			}
 		}
 
 	case dpb.Entry_Swapped_case:
 		src := ref.DecodeString(entry.GetSwapped())
+		src_before := Frame{Value: m[src]}
 		tmp := m[src]
 		op = func(k string) error {
 			w := m[k]
@@ -173,7 +175,7 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 		}
 		after_notify = func() {
 			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: src})
-			o.cursorNotify(entry)
+			o.cursorNotify(src_before, Frame{Value: m[src]}, entry)
 			leave()
 		}
 
@@ -202,11 +204,12 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 	errs := make([]error, 0, len(keys))
 	for _, k := range keys {
 		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: k})
+		before := Frame{Value: m[k]}
 		err := op(k)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("[%s]: %w", k, err))
 		} else if notify_leaf {
-			o.cursorNotify(entry)
+			o.cursorNotify(before, Frame{Value: m[k]}, entry)
 		}
 		leave()
 	}

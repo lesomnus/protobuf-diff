@@ -138,6 +138,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 		if err != nil {
 			return fmt.Errorf("scatter: unmarshal source key: %w", err)
 		}
+		src_before := Frame{Descriptor: vd, Value: c.Get(src)}
 		if !c.Has(src) {
 			op = func(k protoreflect.MapKey) error {
 				if !check(k) {
@@ -167,7 +168,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 		}
 		after_notify = func() {
 			leave := o.cursorEnter(mapKeyToPathEntry(src))
-			o.cursorNotify(entry)
+			o.cursorNotify(src_before, Frame{Descriptor: vd}, entry)
 			leave()
 		}
 
@@ -177,6 +178,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			return fmt.Errorf("swap: unmarshal source key: %w", err)
 		}
 
+		src_before := Frame{Descriptor: vd, Value: c.Get(src)}
 		v := c.Get(src)
 		op = func(k protoreflect.MapKey) error {
 			w := c.Get(k)
@@ -190,7 +192,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 		}
 		after_notify = func() {
 			leave := o.cursorEnter(mapKeyToPathEntry(src))
-			o.cursorNotify(entry)
+			o.cursorNotify(src_before, Frame{Descriptor: vd, Value: c.Get(src)}, entry)
 			leave()
 		}
 
@@ -226,11 +228,12 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 	errs := make([]error, 0, c.Len())
 	for _, k := range keys {
 		leave := o.cursorEnter(mapKeyToPathEntry(k))
+		before := Frame{Descriptor: vd, Value: c.Get(k)}
 		err := op(k)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("[%v]: %w", k, err))
 		} else if notify_leaf {
-			o.cursorNotify(entry)
+			o.cursorNotify(before, Frame{Descriptor: vd, Value: c.Get(k)}, entry)
 		}
 		leave()
 	}
