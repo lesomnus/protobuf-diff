@@ -45,9 +45,16 @@ func unwrapRoot(v any) (any, func(any), error) {
 		return c, func(any) {}, nil
 	case *[]any:
 		return *c, func(nv any) { *c = nv.([]any) }, nil
-	default:
-		return nil, nil, fmt.Errorf("value must be map[string]any or *[]any, got %T", v)
+	case *any:
+		switch d := (*c).(type) {
+		case map[string]any:
+			return d, func(nv any) { *c = nv }, nil
+		case []any:
+			return d, func(nv any) { *c = nv }, nil
+		}
 	}
+
+	return nil, nil, fmt.Errorf("value must be map[string]any or *[]any, got %T", v)
 }
 
 func (o PatchOption) patch(root any, rootSet func(any), entry *dpb.Entry) error {

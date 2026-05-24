@@ -60,7 +60,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 				return nil
 			}
 
-			v, err := decodeValue(entry.GetAssigned(), fd)
+			v, err := o.decodeValue(entry.GetAssigned(), fd)
 			if err != nil {
 				return fmt.Errorf("decode: %w", err)
 			}
@@ -86,7 +86,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 				}
 			}
 
-			w := c.Get(fd)
+			w := c.Mutable(fd)
 			proto.Merge(w.Message().Interface(), v)
 			return nil
 		}

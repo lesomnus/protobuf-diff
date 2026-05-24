@@ -15,23 +15,42 @@ import (
 )
 
 type Patcher interface {
-	Patch(v proto.Message, delta *dpb.Delta) error
+	Patch(v proto.Message, delta *dpb.Delta, opts ...Option) error
 }
 
-func Patch(v proto.Message, delta *dpb.Delta) error {
-	return PatchOption{}.Patch(v, delta)
+// Option configures a Patch or Patched call.
+type Option func(*PatchOption)
+
+// WithTypes sets the type resolver used to decode MessageKind fields in
+// Assigned operations. If not set, protoregistry.GlobalTypes is used.
+func WithTypes(r protoregistry.MessageTypeResolver) Option {
+	return func(o *PatchOption) {
+		o.Types = r
+	}
 }
 
-func Patched[T proto.Message](v T, delta *dpb.Delta) (T, error) {
+func Patch(v proto.Message, delta *dpb.Delta, opts ...Option) error {
+	var o PatchOption
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o.Patch(v, delta)
+}
+
+func Patched[T proto.Message](v T, delta *dpb.Delta, opts ...Option) (T, error) {
 	v = proto.CloneOf(v)
-	if err := Patch(v, delta); err != nil {
+	if err := Patch(v, delta, opts...); err != nil {
 		var z T
 		return z, err
 	}
 	return v, nil
 }
 
-type PatchOption struct{}
+type PatchOption struct {
+	// Types is used to resolve message types when decoding Assigned values for
+	// MessageKind fields. If nil, protoregistry.GlobalTypes is used.
+	Types protoregistry.MessageTypeResolver
+}
 
 func (o PatchOption) Patch(v proto.Message, delta *dpb.Delta) error {
 	return o.PatchField(v.ProtoReflect(), nil, delta)
@@ -119,7 +138,7 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 }
 
 // decodeValue decodes a field value from its wire-format bytes based on the field descriptor.
-func decodeValue(b []byte, fd protoreflect.FieldDescriptor) (protoreflect.Value, error) {
+func (o PatchOption) decodeValue(b []byte, fd protoreflect.FieldDescriptor) (protoreflect.Value, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		v, n := protowire.ConsumeVarint(b)
@@ -228,7 +247,12 @@ func decodeValue(b []byte, fd protoreflect.FieldDescriptor) (protoreflect.Value,
 		return protoreflect.ValueOfBytes(cp), nil
 
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		mt, err := protoregistry.GlobalTypes.FindMessageByName(fd.Message().FullName())
+		resolver := o.Types
+		if resolver == nil {
+			resolver = protoregistry.GlobalTypes
+		}
+
+		mt, err := resolver.FindMessageByName(fd.Message().FullName())
 		if err != nil {
 			return protoreflect.Value{}, fmt.Errorf("find message type %q: %w", fd.Message().FullName(), err)
 		}

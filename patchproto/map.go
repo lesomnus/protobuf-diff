@@ -52,7 +52,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			}
 			if !v.IsValid() {
 				var err error
-				v, err = decodeValue(entry.GetAssigned(), vd)
+				v, err = o.decodeValue(entry.GetAssigned(), vd)
 				if err != nil {
 					return fmt.Errorf("decode: %w", err)
 				}
@@ -74,7 +74,7 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			}
 			if !v.IsValid() {
 				var err error
-				v, err = decodeValue(entry.GetAssigned(), vd)
+				v, err = o.decodeValue(entry.GetAssigned(), vd)
 				if err != nil {
 					return fmt.Errorf("decode: %w", err)
 				}

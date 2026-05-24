@@ -100,7 +100,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		c.Truncate(j)
 
 	case dpb.Entry_Assigned_case:
-		v, err := decodeValue(entry.GetAssigned(), fd)
+		v, err := o.decodeValue(entry.GetAssigned(), fd)
 		if err != nil {
 			return fmt.Errorf("decode: %w", err)
 		}
