@@ -42,8 +42,10 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 		return true
 	}
 
+	notify_leaf := true
 	op := func(k string) error { return nil }
 	after := func() error { return nil }
+	after_notify := func() {}
 
 	switch entry.WhichKind() {
 	case dpb.Entry_Deleted_case:
@@ -149,6 +151,11 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 				delete(m, src)
 				return nil
 			}
+			after_notify = func() {
+				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: src})
+				o.cursorNotify(entry)
+				leave()
+			}
 		}
 
 	case dpb.Entry_Swapped_case:
@@ -164,8 +171,14 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 			m[src] = tmp
 			return nil
 		}
+		after_notify = func() {
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: src})
+			o.cursorNotify(entry)
+			leave()
+		}
 
 	case dpb.Entry_Nested_case:
+		notify_leaf = false
 		delta := entry.GetNested()
 		op = func(k string) error {
 			if !check(k) {
@@ -188,12 +201,19 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 
 	errs := make([]error, 0, len(keys))
 	for _, k := range keys {
-		if err := op(k); err != nil {
+		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: k})
+		err := op(k)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("[%s]: %w", k, err))
+		} else if notify_leaf {
+			o.cursorNotify(entry)
 		}
+		leave()
 	}
 	if err := after(); err != nil {
 		errs = append(errs, fmt.Errorf("clean up: %w", err))
+	} else if notify_leaf {
+		after_notify()
 	}
 	return errors.Join(errs...)
 }

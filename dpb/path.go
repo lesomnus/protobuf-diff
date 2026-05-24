@@ -6,6 +6,21 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+type PathEntryKind int
+
+const (
+	PathEntryField PathEntryKind = iota + 1
+	PathEntryIndex
+)
+
+// PathEntry represents a human-readable segment in the path, which can be a field name or an index.
+type PathEntry struct {
+	Kind PathEntryKind
+
+	Key   string
+	Index int
+}
+
 // Path represents the field path to the target field, encoded as a sequence of tag and wire type pairs.
 type Path struct {
 	v []byte

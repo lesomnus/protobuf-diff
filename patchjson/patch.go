@@ -13,6 +13,20 @@ type Patcher interface {
 	Patch(v any, delta *dpb.Delta) error
 }
 
+// Option configures a Patch call.
+type Option func(*PatchOption)
+
+// WithHook registers a hook that is called each time a value is modified.
+// The hook receives the path of PathEntries leading to the modified value.
+func WithHook(h func([]dpb.PathEntry, *dpb.Entry)) Option {
+	return func(o *PatchOption) {
+		if o.cursor == nil {
+			o.cursor = &dpb.Cursor{}
+		}
+		o.cursor.Hooks = append(o.cursor.Hooks, h)
+	}
+}
+
 // Value encodes v as JSON bytes for use in Entry.SetAssigned and similar fields.
 // patchjson expects assigned bytes to be JSON-encoded values.
 func Value(v any) []byte {
@@ -20,23 +34,66 @@ func Value(v any) []byte {
 	return b
 }
 
-func Patch(v any, delta *dpb.Delta) error {
-	return PatchOption{}.Patch(v, delta)
+func Patch(v any, delta *dpb.Delta, opts ...Option) error {
+	var o PatchOption
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o.Patch(v, delta)
 }
 
-type PatchOption struct{}
+type PatchOption struct {
+	// cursor is a pointer so all value-receiver copies share the same path state.
+	cursor *dpb.Cursor
+}
 
 func (o PatchOption) Patch(v any, delta *dpb.Delta) error {
+	o_ := o
+	c := &dpb.Cursor{}
+	if o.cursor != nil {
+		c.Hooks = o.cursor.Hooks
+	}
+	o_.cursor = c
+
 	root, rootSet, err := unwrapRoot(v)
 	if err != nil {
 		return err
 	}
 	for i, entry := range delta.GetEntries() {
-		if err := o.patch(root, rootSet, entry); err != nil {
+		if err := o_.patch(root, rootSet, entry); err != nil {
 			return fmt.Errorf("entry[%d]: %w", i, err)
 		}
 	}
 	return nil
+}
+
+// cursorEnter pushes a PathEntry and returns a function that pops it.
+func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
+	if o.cursor == nil {
+		return func() {}
+	}
+	o.cursor.Push(e)
+	return func() { o.cursor.Pop() }
+}
+
+// cursorNotify fires all hooks with the current cursor path and entry.
+func (o PatchOption) cursorNotify(entry *dpb.Entry) {
+	if o.cursor != nil {
+		o.cursor.Notify(entry)
+	}
+}
+
+func segmentToPathEntry(s any) dpb.PathEntry {
+	switch s := s.(type) {
+	case string:
+		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: s}
+	case int:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: s}
+	case uint:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(s)}
+	default:
+		return dpb.PathEntry{}
+	}
 }
 
 func unwrapRoot(v any) (any, func(any), error) {
@@ -66,6 +123,17 @@ func (o PatchOption) patch(root any, rootSet func(any), entry *dpb.Entry) error 
 			return fmt.Errorf("empty path and no targets")
 		}
 		segments, s = segments[:len(segments)-1], segments[len(segments)-1]
+	}
+
+	if o.cursor != nil {
+		for _, seg := range segments {
+			o.cursor.Push(segmentToPathEntry(seg))
+		}
+		defer func() {
+			for range segments {
+				o.cursor.Pop()
+			}
+		}()
 	}
 
 	container, containerSet, err := navigate(root, rootSet, segments)

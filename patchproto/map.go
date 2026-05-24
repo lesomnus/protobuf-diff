@@ -11,6 +11,23 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 )
 
+func mapKeyToPathEntry(k protoreflect.MapKey) dpb.PathEntry {
+	switch v := k.Interface().(type) {
+	case string:
+		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: v}
+	case int32:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(v)}
+	case int64:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(v)}
+	case uint32:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(v)}
+	case uint64:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(v)}
+	default:
+		return dpb.PathEntry{}
+	}
+}
+
 func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
 	kd := fd.MapKey()
 	keys, err := target.DecodeKeys(entry.GetTargets(), kd.Kind())
@@ -22,8 +39,10 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 	}
 
 	vd := fd.MapValue()
+	notify_leaf := true
 	op := func(k protoreflect.MapKey) error { return nil }
 	after := func() error { return nil }
+	after_notify := func() {}
 	check := func(k protoreflect.MapKey) bool {
 		exists := c.Has(k)
 		if !exists && entry.GetNoInsert() {
@@ -146,6 +165,11 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			c.Clear(src)
 			return nil
 		}
+		after_notify = func() {
+			leave := o.cursorEnter(mapKeyToPathEntry(src))
+			o.cursorNotify(entry)
+			leave()
+		}
 
 	case dpb.Entry_Swapped_case:
 		src, err := ref.DecodeKey(entry.GetSwapped(), kd.Kind())
@@ -164,8 +188,14 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 			c.Set(src, v)
 			return nil
 		}
+		after_notify = func() {
+			leave := o.cursorEnter(mapKeyToPathEntry(src))
+			o.cursorNotify(entry)
+			leave()
+		}
 
 	case dpb.Entry_Nested_case:
+		notify_leaf = false
 		delta := entry.GetNested()
 		kind := vd.Kind()
 		if !(kind == protoreflect.MessageKind || kind == protoreflect.GroupKind) {
@@ -195,12 +225,19 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 
 	errs := make([]error, 0, c.Len())
 	for _, k := range keys {
-		if err := op(k); err != nil {
+		leave := o.cursorEnter(mapKeyToPathEntry(k))
+		err := op(k)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("[%v]: %w", k, err))
+		} else if notify_leaf {
+			o.cursorNotify(entry)
 		}
+		leave()
 	}
 	if err := after(); err != nil {
 		errs = append(errs, fmt.Errorf("clean up: %w", err))
+	} else if notify_leaf {
+		after_notify()
 	}
 	return errors.Join(errs...)
 }

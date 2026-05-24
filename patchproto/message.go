@@ -27,6 +27,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 		return fmt.Errorf("field [%d] not found in %q", targets[0], c.Descriptor().FullName())
 	}
 
+	notify_leaf := true
 	op := func(fd protoreflect.FieldDescriptor) error {
 		return nil
 	}
@@ -198,6 +199,7 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
 
 	case dpb.Entry_Nested_case:
+		notify_leaf = false
 		delta := entry.GetNested()
 		op = func(fd protoreflect.FieldDescriptor) error {
 			if !check(fd) {
@@ -239,9 +241,14 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 			continue
 		}
 
-		if err := op(fd); err != nil {
+		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: string(fd.Name()), Index: int(fd.Number())})
+		err := op(fd)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("[%d]: %w", i, err))
+		} else if notify_leaf {
+			o.cursorNotify(entry)
 		}
+		leave()
 	}
 	return errors.Join(errs...)
 }

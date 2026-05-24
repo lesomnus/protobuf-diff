@@ -29,6 +29,17 @@ func WithTypes(r protoregistry.MessageTypeResolver) Option {
 	}
 }
 
+// WithHook registers a hook that is called each time a field is modified.
+// The hook receives the path of PathEntries leading to the modified field.
+func WithHook(h func([]dpb.PathEntry, *dpb.Entry)) Option {
+	return func(o *PatchOption) {
+		if o.cursor == nil {
+			o.cursor = &dpb.Cursor{}
+		}
+		o.cursor.Hooks = append(o.cursor.Hooks, h)
+	}
+}
+
 func Patch(v proto.Message, delta *dpb.Delta, opts ...Option) error {
 	var o PatchOption
 	for _, opt := range opts {
@@ -50,10 +61,47 @@ type PatchOption struct {
 	// Types is used to resolve message types when decoding Assigned values for
 	// MessageKind fields. If nil, protoregistry.GlobalTypes is used.
 	Types protoregistry.MessageTypeResolver
+	// cursor is a pointer so all value-receiver copies share the same path state.
+	cursor *dpb.Cursor
 }
 
 func (o PatchOption) Patch(v proto.Message, delta *dpb.Delta) error {
-	return o.PatchField(v.ProtoReflect(), nil, delta)
+	o_ := o
+	c := &dpb.Cursor{}
+	if o.cursor != nil {
+		c.Hooks = o.cursor.Hooks
+	}
+	o_.cursor = c
+	return o_.PatchField(v.ProtoReflect(), nil, delta)
+}
+
+// cursorEnter pushes a PathEntry and returns a function that pops it.
+func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
+	if o.cursor == nil {
+		return func() {}
+	}
+	o.cursor.Push(e)
+	return func() { o.cursor.Pop() }
+}
+
+// cursorNotify fires all hooks with the current cursor path and the entry being applied.
+func (o PatchOption) cursorNotify(entry *dpb.Entry) {
+	if o.cursor != nil {
+		o.cursor.Notify(entry)
+	}
+}
+
+func segmentToPathEntry(s any) dpb.PathEntry {
+	switch s := s.(type) {
+	case string:
+		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: s}
+	case int:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: s}
+	case uint:
+		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(s)}
+	default:
+		return dpb.PathEntry{}
+	}
 }
 
 func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *dpb.Delta) error {
@@ -74,6 +122,17 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 		segments, s = segments[:len(segments)-1], segments[len(segments)-1]
 	}
 
+	if o.cursor != nil {
+		for _, seg := range segments {
+			o.cursor.Push(segmentToPathEntry(seg))
+		}
+		defer func() {
+			for range segments {
+				o.cursor.Pop()
+			}
+		}()
+	}
+
 	v, fd, err := Navigate(v, fd, segments)
 	if err != nil {
 		return fmt.Errorf("navigate path: %w", err)
@@ -87,13 +146,13 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 			if fd == nil {
 				return nil
 			}
-			entry.AppendTargets(target.Fields(fd.Number()))
+			entry = entryWithTargets(entry, target.Fields(fd.Number()))
 
 		case int:
-			entry.AppendTargets(target.Fields(protoreflect.FieldNumber(s)))
+			entry = entryWithTargets(entry, target.Fields(protoreflect.FieldNumber(s)))
 
 		case uint:
-			entry.AppendTargets(target.Fields(protoreflect.FieldNumber(s)))
+			entry = entryWithTargets(entry, target.Fields(protoreflect.FieldNumber(s)))
 
 		case nil:
 		default:
@@ -104,10 +163,10 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 	case protoreflect.List:
 		switch s := s.(type) {
 		case int:
-			entry.AppendTargets(target.Indices(s))
+			entry = entryWithTargets(entry, target.Indices(s))
 
 		case uint:
-			entry.AppendTargets(target.Indices(int(s)))
+			entry = entryWithTargets(entry, target.Indices(int(s)))
 
 		case nil:
 		default:
@@ -118,13 +177,13 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 	case protoreflect.Map:
 		switch s := s.(type) {
 		case string:
-			entry.AppendTargets(target.StringKeys(s))
+			entry = entryWithTargets(entry, target.StringKeys(s))
 
 		case int:
-			entry.AppendTargets(target.SignedKeys(s))
+			entry = entryWithTargets(entry, target.SignedKeys(s))
 
 		case uint:
-			entry.AppendTargets(target.UnsignedKeys(s))
+			entry = entryWithTargets(entry, target.UnsignedKeys(s))
 
 		case nil:
 		default:
@@ -135,6 +194,14 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 	default:
 		return fmt.Errorf("unsupported value type: %T", v)
 	}
+}
+
+// entryWithTargets returns a shallow clone of entry with the given targets appended.
+// The original entry is not modified.
+func entryWithTargets(entry *dpb.Entry, targets target.Targets) *dpb.Entry {
+	e := proto.Clone(entry).(*dpb.Entry)
+	e.AppendTargets(targets)
+	return e
 }
 
 // decodeValue decodes a field value from its wire-format bytes based on the field descriptor.

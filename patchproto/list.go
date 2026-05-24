@@ -77,6 +77,24 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		}
 	}
 
+	// notify_insert fires hooks for each user-specified insertion index.
+	notify_insert := func() {
+		for _, i := range targets {
+			if i < -1-l || i > l {
+				continue
+			}
+			idx := i
+			if i < -1 {
+				idx = l + i + 1
+			} else if i == -1 {
+				idx = l
+			}
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: idx})
+			o.cursorNotify(entry)
+			leave()
+		}
+	}
+
 	switch entry.WhichKind() {
 	case dpb.Entry_Deleted_case:
 		targets_set := make(map[int]struct{}, len(targets))
@@ -85,13 +103,15 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			if !ok {
 				continue
 			}
-
 			targets_set[i] = struct{}{}
 		}
 
 		j := 0
 		for i := range l {
 			if _, ok := targets_set[i]; ok {
+				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
+				o.cursorNotify(entry)
+				leave()
 				continue
 			}
 			c.Set(j, c.Get(i))
@@ -107,6 +127,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 
 		if entry.GetNoUpdate() {
 			splice(v)
+			notify_insert()
 		} else {
 			for _, i := range targets {
 				i, ok := normal(i)
@@ -114,6 +135,9 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 					continue
 				}
 				c.Set(i, v)
+				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
+				o.cursorNotify(entry)
+				leave()
 			}
 		}
 
@@ -134,6 +158,7 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		v := c.Get(k)
 		if entry.GetNoUpdate() {
 			splice(v)
+			notify_insert()
 		} else {
 			for _, i := range targets {
 				i, ok := normal(i)
@@ -141,6 +166,9 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 					continue
 				}
 				c.Set(i, v)
+				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
+				o.cursorNotify(entry)
+				leave()
 			}
 		}
 
@@ -203,6 +231,12 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			for i := k + offset; i < l-1; i++ {
 				c.Set(i, c.Get(i+1))
 			}
+
+			notify_insert()
+			// Also notify for the source index that was removed.
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
+			o.cursorNotify(entry)
+			leave()
 		} else {
 			for _, i := range targets {
 				i, ok := normal(i)
@@ -210,10 +244,17 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 					continue
 				}
 				c.Set(i, v)
+				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
+				o.cursorNotify(entry)
+				leave()
 			}
 			for i := k; i < l-1; i++ {
 				c.Set(i, c.Get(i+1))
 			}
+			// Notify for the source index that was removed.
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
+			o.cursorNotify(entry)
+			leave()
 		}
 		c.Truncate(l - 1)
 
@@ -238,8 +279,14 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			w := c.Get(i)
 			c.Set(i, v)
 			v = w
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
+			o.cursorNotify(entry)
+			leave()
 		}
 		c.Set(k, v)
+		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
+		o.cursorNotify(entry)
+		leave()
 
 	case dpb.Entry_Nested_case:
 		delta := entry.GetNested()
@@ -267,12 +314,15 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 					continue
 				}
 
+				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
 				v := c.Get(i)
 				sub := v.Message()
 				if err := o.PatchField(sub, fd, delta); err != nil {
+					leave()
 					return fmt.Errorf("[%d]: %w", i, err)
 				}
 				c.Set(i, protoreflect.ValueOfMessage(sub))
+				leave()
 			}
 		}
 	}
