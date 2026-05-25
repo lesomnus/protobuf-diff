@@ -1,0 +1,41 @@
+edition = "2023";
+
+package diff;
+
+import "diff/segment.proto";
+
+option go_package = "github.com/lesomnus/protobuf-diff/dpb";
+
+message Struct {
+  repeated KeyValue fields = 1;
+}
+
+message KeyValue {
+  FieldSegment key = 1;
+  Value value = 2;
+}
+
+message Value {
+  oneof kind {
+    NullValue n = 1;
+    double f = 2;
+    string s = 3;
+    bool b = 4;
+
+    sint64 i = 7;
+    uint64 u = 8;
+    bytes x = 9;
+
+    Struct m = 10;
+    ListValue l = 11;
+  }
+}
+
+enum NullValue {
+  // Null value.
+  NULL_VALUE = 0;
+}
+
+message ListValue {
+  repeated Value values = 1;
+}

@@ -1,14 +1,11 @@
 package patchproto
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"math"
-	"slices"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/target"
-	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -21,16 +18,15 @@ type Patcher interface {
 // Option configures a Patch or Patched call.
 type Option func(*PatchOption)
 
-// WithTypes sets the type resolver used to decode MessageKind fields in
-// Assigned operations. If not set, protoregistry.GlobalTypes is used.
+// WithTypes sets the type resolver used to decode message-kind values in
+// Assign/Insert operations. If not set, protoregistry.GlobalTypes is used.
 func WithTypes(r protoregistry.MessageTypeResolver) Option {
 	return func(o *PatchOption) {
 		o.Types = r
 	}
 }
 
-// Frame holds the value and field descriptor at the cursor position, used to
-// represent the state before or after an entry is applied.
+// Frame holds the value and field descriptor at the cursor position.
 type Frame struct {
 	Descriptor protoreflect.FieldDescriptor
 	Value      protoreflect.Value
@@ -49,8 +45,7 @@ func (f Frame) String() string {
 	return fmt.Sprint(f.Value.Interface())
 }
 
-// WithHook registers a hook that is called each time a field is modified.
-// The hook receives the path, the before and after frames, and the entry.
+// WithHook registers a hook called each time a field is modified.
 func WithHook(h func([]dpb.PathEntry, dpb.Frame, dpb.Frame, *dpb.Entry)) Option {
 	return func(o *PatchOption) {
 		if o.cursor == nil {
@@ -78,10 +73,7 @@ func Patched[T proto.Message](v T, delta *dpb.Delta, opts ...Option) (T, error) 
 }
 
 type PatchOption struct {
-	// Types is used to resolve message types when decoding Assigned values for
-	// MessageKind fields. If nil, protoregistry.GlobalTypes is used.
-	Types protoregistry.MessageTypeResolver
-	// cursor is a pointer so all value-receiver copies share the same path state.
+	Types  protoregistry.MessageTypeResolver
 	cursor *dpb.Cursor
 }
 
@@ -95,7 +87,6 @@ func (o PatchOption) Patch(v proto.Message, delta *dpb.Delta) error {
 	return o_.PatchField(v.ProtoReflect(), nil, delta)
 }
 
-// cursorEnter pushes a PathEntry and returns a function that pops it.
 func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
 	if o.cursor == nil {
 		return func() {}
@@ -104,23 +95,9 @@ func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
 	return func() { o.cursor.Pop() }
 }
 
-// cursorNotify fires all hooks with the current cursor path, before/after frames, and the entry.
 func (o PatchOption) cursorNotify(before, after dpb.Frame, entry *dpb.Entry) {
 	if o.cursor != nil {
 		o.cursor.Notify(before, after, entry)
-	}
-}
-
-func segmentToPathEntry(s any) dpb.PathEntry {
-	switch s := s.(type) {
-	case string:
-		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: s}
-	case int:
-		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: s}
-	case uint:
-		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(s)}
-	default:
-		return dpb.PathEntry{}
 	}
 }
 
@@ -130,228 +107,217 @@ func (o PatchOption) PatchField(v any, fd protoreflect.FieldDescriptor, delta *d
 			return fmt.Errorf("entry[%d]: %w", i, err)
 		}
 	}
-
 	return nil
 }
 
-func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
-	segments := slices.Collect(entry.Path().Seq())
-
-	var s any
-	if len(entry.GetTargets()) == 0 {
-		segments, s = segments[:len(segments)-1], segments[len(segments)-1]
+func fieldSegmentToPathEntry(fs *dpb.FieldSegment) dpb.PathEntry {
+	if fs.HasName() && fs.GetName() != "" {
+		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: fs.GetName()}
 	}
+	return dpb.PathEntry{Kind: dpb.PathEntryField, Index: int(fs.GetNumber())}
+}
+
+func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
+	pathSegs := entry.GetPath().GetSegments()
 
 	if o.cursor != nil {
-		for _, seg := range segments {
-			o.cursor.Push(segmentToPathEntry(seg))
+		for _, fs := range pathSegs {
+			o.cursor.Push(fieldSegmentToPathEntry(fs))
 		}
 		defer func() {
-			for range segments {
+			for range pathSegs {
 				o.cursor.Pop()
 			}
 		}()
 	}
 
-	v, fd, err := Navigate(v, fd, segments)
+	v, fd, err := Navigate(v, fd, pathSegs)
 	if err != nil {
 		return fmt.Errorf("navigate path: %w", err)
 	}
 
-	switch v := v.(type) {
+	targets := entry.GetTargets()
+
+	switch c := v.(type) {
 	case protoreflect.Message:
-		switch s := s.(type) {
-		case string:
-			fd := v.Descriptor().Fields().ByName(protoreflect.Name(s))
-			if fd == nil {
-				return nil
-			}
-			entry = entryWithTargets(entry, target.Fields(fd.Number()))
-
-		case int:
-			entry = entryWithTargets(entry, target.Fields(protoreflect.FieldNumber(s)))
-
-		case uint:
-			entry = entryWithTargets(entry, target.Fields(protoreflect.FieldNumber(s)))
-
-		case nil:
-		default:
-			return fmt.Errorf("invalid target segment type: %T", s)
-		}
-		return o.patchMessage(v, entry)
-
+		return o.patchMessage(c, fd, targets, entry)
 	case protoreflect.List:
-		switch s := s.(type) {
-		case int:
-			entry = entryWithTargets(entry, target.Indices(s))
-
-		case uint:
-			entry = entryWithTargets(entry, target.Indices(int(s)))
-
-		case nil:
-		default:
-			return fmt.Errorf("invalid target segment type for list: %T", s)
-		}
-		return o.patchList(v, fd, entry)
-
+		return o.patchList(c, fd, targets, entry)
 	case protoreflect.Map:
-		switch s := s.(type) {
-		case string:
-			entry = entryWithTargets(entry, target.StringKeys(s))
-
-		case int:
-			entry = entryWithTargets(entry, target.SignedKeys(s))
-
-		case uint:
-			entry = entryWithTargets(entry, target.UnsignedKeys(s))
-
-		case nil:
-		default:
-			return fmt.Errorf("invalid target segment type: %T", s)
-		}
-		return o.patchMap(v, fd, entry)
-
+		return o.patchMap(c, fd, targets, entry)
 	default:
-		return fmt.Errorf("unsupported value type: %T", v)
+		return fmt.Errorf("unsupported container type: %T", v)
 	}
 }
 
-// entryWithTargets returns a shallow clone of entry with the given targets appended.
-// The original entry is not modified.
-func entryWithTargets(entry *dpb.Entry, targets target.Targets) *dpb.Entry {
-	e := proto.Clone(entry).(*dpb.Entry)
-	e.AppendTargets(targets)
-	return e
-}
+// valueToProtoValue converts a *dpb.Value to a protoreflect.Value using the field descriptor.
+func valueToProtoValue(val *dpb.Value, fd protoreflect.FieldDescriptor, types protoregistry.MessageTypeResolver) (protoreflect.Value, error) {
+	if val == nil {
+		return protoreflect.Value{}, nil
+	}
+	switch val.WhichKind() {
+	case dpb.Value_N_case:
+		return protoreflect.Value{}, nil // invalid = clear/zero
 
-// decodeValue decodes a field value from its wire-format bytes based on the field descriptor.
-func (o PatchOption) decodeValue(b []byte, fd protoreflect.FieldDescriptor) (protoreflect.Value, error) {
-	switch fd.Kind() {
-	case protoreflect.BoolKind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfBool(v != 0), nil
-
-	case protoreflect.EnumKind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfEnum(protoreflect.EnumNumber(int32(v))), nil
-
-	case protoreflect.Int32Kind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfInt32(int32(v)), nil
-
-	case protoreflect.Sint32Kind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfInt32(int32(protowire.DecodeZigZag(v))), nil
-
-	case protoreflect.Uint32Kind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfUint32(uint32(v)), nil
-
-	case protoreflect.Int64Kind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfInt64(int64(v)), nil
-
-	case protoreflect.Sint64Kind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfInt64(protowire.DecodeZigZag(v)), nil
-
-	case protoreflect.Uint64Kind:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid varint")
-		}
-		return protoreflect.ValueOfUint64(v), nil
-
-	case protoreflect.Sfixed32Kind:
-		v, n := protowire.ConsumeFixed32(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid fixed32")
-		}
-		return protoreflect.ValueOfInt32(int32(v)), nil
-
-	case protoreflect.Fixed32Kind:
-		v, n := protowire.ConsumeFixed32(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid fixed32")
-		}
-		return protoreflect.ValueOfUint32(v), nil
-
-	case protoreflect.FloatKind:
-		v, n := protowire.ConsumeFixed32(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid fixed32")
-		}
-		return protoreflect.ValueOfFloat32(math.Float32frombits(v)), nil
-
-	case protoreflect.Sfixed64Kind:
-		v, n := protowire.ConsumeFixed64(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid fixed64")
-		}
-		return protoreflect.ValueOfInt64(int64(v)), nil
-
-	case protoreflect.Fixed64Kind:
-		v, n := protowire.ConsumeFixed64(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid fixed64")
-		}
-		return protoreflect.ValueOfUint64(v), nil
-
-	case protoreflect.DoubleKind:
-		v, n := protowire.ConsumeFixed64(b)
-		if n < 0 {
-			return protoreflect.Value{}, errors.New("invalid fixed64")
-		}
-		return protoreflect.ValueOfFloat64(math.Float64frombits(v)), nil
-
-	case protoreflect.StringKind:
-		return protoreflect.ValueOfString(string(b)), nil
-
-	case protoreflect.BytesKind:
-		cp := make([]byte, len(b))
-		copy(cp, b)
-		return protoreflect.ValueOfBytes(cp), nil
-
-	case protoreflect.MessageKind, protoreflect.GroupKind:
-		resolver := o.Types
-		if resolver == nil {
-			resolver = protoregistry.GlobalTypes
+	case dpb.Value_F_case:
+		f := val.GetF()
+		switch fd.Kind() {
+		case protoreflect.FloatKind:
+			return protoreflect.ValueOfFloat32(float32(f)), nil
+		default:
+			return protoreflect.ValueOfFloat64(f), nil
 		}
 
-		mt, err := resolver.FindMessageByName(fd.Message().FullName())
+	case dpb.Value_S_case:
+		return protoreflect.ValueOfString(val.GetS()), nil
+
+	case dpb.Value_B_case:
+		return protoreflect.ValueOfBool(val.GetB()), nil
+
+	case dpb.Value_I_case:
+		i := val.GetI()
+		switch fd.Kind() {
+		case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+			return protoreflect.ValueOfInt32(int32(i)), nil
+		case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+			return protoreflect.ValueOfInt64(i), nil
+		case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+			return protoreflect.ValueOfUint32(uint32(i)), nil
+		case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+			return protoreflect.ValueOfUint64(uint64(i)), nil
+		case protoreflect.FloatKind:
+			return protoreflect.ValueOfFloat32(float32(i)), nil
+		case protoreflect.DoubleKind:
+			return protoreflect.ValueOfFloat64(float64(i)), nil
+		case protoreflect.BoolKind:
+			return protoreflect.ValueOfBool(i != 0), nil
+		case protoreflect.EnumKind:
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(i)), nil
+		default:
+			return protoreflect.ValueOfInt64(i), nil
+		}
+
+	case dpb.Value_U_case:
+		u := val.GetU()
+		switch fd.Kind() {
+		case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+			return protoreflect.ValueOfUint32(uint32(u)), nil
+		case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+			return protoreflect.ValueOfUint64(u), nil
+		case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+			return protoreflect.ValueOfInt32(int32(u)), nil
+		case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+			return protoreflect.ValueOfInt64(int64(u)), nil
+		case protoreflect.FloatKind:
+			return protoreflect.ValueOfFloat32(float32(u)), nil
+		case protoreflect.DoubleKind:
+			return protoreflect.ValueOfFloat64(float64(u)), nil
+		case protoreflect.BoolKind:
+			return protoreflect.ValueOfBool(u != 0), nil
+		case protoreflect.EnumKind:
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(u)), nil
+		default:
+			return protoreflect.ValueOfUint64(u), nil
+		}
+
+	case dpb.Value_X_case:
+		return protoreflect.ValueOfBytes(val.GetX()), nil
+
+	case dpb.Value_M_case:
+		if types == nil {
+			types = protoregistry.GlobalTypes
+		}
+		mt, err := types.FindMessageByName(fd.Message().FullName())
 		if err != nil {
 			return protoreflect.Value{}, fmt.Errorf("find message type %q: %w", fd.Message().FullName(), err)
 		}
-
 		m := mt.New()
-		if err := proto.Unmarshal(b, m.Interface()); err != nil {
-			return protoreflect.Value{}, fmt.Errorf("unmarshal message: %w", err)
+		if err := applyStructToMessage(val.GetM(), m); err != nil {
+			return protoreflect.Value{}, err
 		}
-
 		return protoreflect.ValueOfMessage(m), nil
 
 	default:
-		return protoreflect.Value{}, fmt.Errorf("unsupported field kind: %v", fd.Kind())
+		return protoreflect.Value{}, fmt.Errorf("unsupported value kind: %v", val.WhichKind())
 	}
+}
+
+// applyStructToMessage populates a message from a Struct.
+func applyStructToMessage(s *dpb.Struct, m protoreflect.Message) error {
+	if s == nil {
+		return nil
+	}
+	fields := m.Descriptor().Fields()
+	for _, kv := range s.GetFields() {
+		fd := findFieldByFieldSegment(fields, kv.GetKey())
+		if fd == nil {
+			continue
+		}
+		v, err := valueToProtoValue(kv.GetValue(), fd, nil)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", fd.Name(), err)
+		}
+		if !v.IsValid() {
+			m.Clear(fd)
+		} else {
+			m.Set(fd, v)
+		}
+	}
+	return nil
+}
+
+// protoValueEqual compares two protoreflect.Values for equality by field kind.
+func protoValueEqual(a, b protoreflect.Value, kind protoreflect.Kind) bool {
+	if !a.IsValid() && !b.IsValid() {
+		return true
+	}
+	if !a.IsValid() || !b.IsValid() {
+		return false
+	}
+	switch kind {
+	case protoreflect.BoolKind:
+		return a.Bool() == b.Bool()
+	case protoreflect.EnumKind:
+		return a.Enum() == b.Enum()
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return a.Int() == b.Int()
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return a.Uint() == b.Uint()
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		af, bf := a.Float(), b.Float()
+		return af == bf || (math.IsNaN(af) && math.IsNaN(bf))
+	case protoreflect.StringKind:
+		return a.String() == b.String()
+	case protoreflect.BytesKind:
+		return bytes.Equal(a.Bytes(), b.Bytes())
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return proto.Equal(a.Message().Interface(), b.Message().Interface())
+	default:
+		return false
+	}
+}
+
+// findFieldByFieldSegment finds a FieldDescriptor by FieldSegment (name, name_alt, or number).
+func findFieldByFieldSegment(fields protoreflect.FieldDescriptors, fs *dpb.FieldSegment) protoreflect.FieldDescriptor {
+	if fs == nil {
+		return nil
+	}
+	if fs.HasName() && fs.GetName() != "" {
+		if fd := fields.ByName(protoreflect.Name(fs.GetName())); fd != nil {
+			return fd
+		}
+	}
+	if fs.HasNameAlt() && fs.GetNameAlt() != "" {
+		if fd := fields.ByJSONName(fs.GetNameAlt()); fd != nil {
+			return fd
+		}
+	}
+	if fs.HasNumber() {
+		if fd := fields.ByNumber(protoreflect.FieldNumber(fs.GetNumber())); fd != nil {
+			return fd
+		}
+	}
+	return nil
 }

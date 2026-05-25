@@ -5,41 +5,30 @@ import (
 	"fmt"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"google.golang.org/protobuf/encoding/protowire"
 )
 
-func decodeStringKeys(data []byte) ([]string, error) {
+func decodeMapTargets(targets []*dpb.Segment) []string {
 	var keys []string
-	for len(data) > 0 {
-		s, n := protowire.ConsumeString(data)
-		if n < 0 {
-			return nil, fmt.Errorf("invalid string key encoding: %w", protowire.ParseError(n))
+	for _, seg := range targets {
+		switch seg.WhichKind() {
+		case dpb.Segment_Name_case:
+			keys = append(keys, seg.GetName())
+		case dpb.Segment_Field_case:
+			if fs := seg.GetField(); fs != nil && fs.HasName() {
+				keys = append(keys, fs.GetName())
+			}
 		}
-		keys = append(keys, s)
-		data = data[n:]
 	}
-	return keys, nil
+	return keys
 }
 
 func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
-	keys, err := decodeStringKeys(entry.GetTargets())
-	if err != nil {
-		return fmt.Errorf("decode targets: %w", err)
-	}
+	keys := decodeMapTargets(entry.GetTargets())
 	if len(keys) == 0 {
+		if entry.WhichKind() == dpb.Entry_Nest_case {
+			return o.patchField(m, func(any) {}, entry.GetNest())
+		}
 		return nil
-	}
-
-	check := func(k string) bool {
-		_, exists := m[k]
-		if !exists && entry.GetNoInsert() {
-			return false
-		}
-		if exists && entry.GetNoUpdate() {
-			return false
-		}
-		return true
 	}
 
 	notify_leaf := true
@@ -48,103 +37,51 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 	after_notify := func() {}
 
 	switch entry.WhichKind() {
-	case dpb.Entry_Deleted_case:
-		if entry.GetDeleted() {
+	case dpb.Entry_Remove_case:
+		if entry.GetRemove() {
 			op = func(k string) error {
 				delete(m, k)
 				return nil
 			}
 		}
 
-	case dpb.Entry_Assigned_case:
-		var val any
-		var decoded bool
+	case dpb.Entry_Test_case:
+		notify_leaf = false
+		expected := dpbValueToAny(entry.GetTest())
 		op = func(k string) error {
-			if !check(k) {
-				return nil
+			if m[k] != expected {
+				return fmt.Errorf("test failed at key %q", k)
 			}
-			if !decoded {
-				var err error
-				val, err = decodeValue(entry.GetAssigned())
-				if err != nil {
-					return fmt.Errorf("decode: %w", err)
-				}
-				decoded = true
+			return nil
+		}
+
+	case dpb.Entry_Insert_case:
+		val := dpbValueToAny(entry.GetInsert())
+		op = func(k string) error {
+			if _, exists := m[k]; !exists {
+				m[k] = val
 			}
+			return nil
+		}
+
+	case dpb.Entry_Assign_case:
+		val := dpbValueToAny(entry.GetAssign())
+		op = func(k string) error {
 			m[k] = val
 			return nil
 		}
 
-	case dpb.Entry_Merged_case:
-		var patch map[string]any
-		var decoded bool
-		op = func(k string) error {
-			if !check(k) {
-				return nil
-			}
-			child, exists := m[k]
-			if !exists {
-				return nil
-			}
-			childMap, ok := child.(map[string]any)
-			if !ok {
-				return fmt.Errorf("merged target must be an object, got %T", child)
-			}
-			if !decoded {
-				v, err := decodeValue(entry.GetMerged())
-				if err != nil {
-					return fmt.Errorf("decode: %w", err)
-				}
-				patch, ok = v.(map[string]any)
-				if !ok {
-					return fmt.Errorf("merged value must be an object, got %T", v)
-				}
-				decoded = true
-			}
-			for pk, pv := range patch {
-				childMap[pk] = pv
-			}
-			return nil
-		}
-
-	case dpb.Entry_Copied_case:
-		src := ref.DecodeString(entry.GetCopied())
-		srcVal, exists := m[src]
-		if !exists {
-			op = func(k string) error {
-				if !check(k) {
-					return nil
-				}
-				delete(m, k)
-				return nil
-			}
-		} else {
-			op = func(k string) error {
-				if !check(k) {
-					return nil
-				}
-				m[k] = srcVal
-				return nil
-			}
-		}
-
-	case dpb.Entry_Scattered_case:
-		src := ref.DecodeString(entry.GetScattered())
+	case dpb.Entry_Move_case:
+		src := entry.GetMove().GetName()
 		src_v, exists := m[src]
 		src_before := Frame{Value: src_v}
 		if !exists {
 			op = func(k string) error {
-				if !check(k) {
-					return nil
-				}
 				delete(m, k)
 				return nil
 			}
 		} else {
 			op = func(k string) error {
-				if !check(k) {
-					return nil
-				}
 				m[k] = src_v
 				return nil
 			}
@@ -159,33 +96,25 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 			}
 		}
 
-	case dpb.Entry_Swapped_case:
-		src := ref.DecodeString(entry.GetSwapped())
-		src_before := Frame{Value: m[src]}
-		tmp := m[src]
-		op = func(k string) error {
-			w := m[k]
-			m[k] = tmp
-			tmp = w
-			return nil
-		}
-		after = func() error {
-			m[src] = tmp
-			return nil
-		}
-		after_notify = func() {
-			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryField, Key: src})
-			o.cursorNotify(src_before, Frame{Value: m[src]}, entry)
-			leave()
-		}
-
-	case dpb.Entry_Nested_case:
-		notify_leaf = false
-		delta := entry.GetNested()
-		op = func(k string) error {
-			if !check(k) {
+	case dpb.Entry_Copy_case:
+		src := entry.GetCopy().GetName()
+		src_v, exists := m[src]
+		if !exists {
+			op = func(k string) error {
+				delete(m, k)
 				return nil
 			}
+		} else {
+			op = func(k string) error {
+				m[k] = src_v
+				return nil
+			}
+		}
+
+	case dpb.Entry_Nest_case:
+		notify_leaf = false
+		delta := entry.GetNest()
+		op = func(k string) error {
 			child, exists := m[k]
 			if !exists {
 				return nil
@@ -193,9 +122,6 @@ func (o PatchOption) patchMap(m map[string]any, entry *dpb.Entry) error {
 			childSet := func(v any) { m[k] = v }
 			return o.patchField(child, childSet, delta)
 		}
-
-	case dpb.Entry_Edited_case:
-		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
 
 	default:
 		return fmt.Errorf("unknown op: %q", entry.WhichKind())

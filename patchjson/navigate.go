@@ -1,20 +1,21 @@
 package patchjson
 
-import "fmt"
+import (
+	"fmt"
 
-func navigate(root any, rootSet func(any), segments []any) (any, func(any), error) {
+	"github.com/lesomnus/protobuf-diff/dpb"
+)
+
+func navigate(root any, rootSet func(any), segments []*dpb.FieldSegment) (any, func(any), error) {
 	if len(segments) == 0 {
 		return root, rootSet, nil
 	}
 
-	s := segments[0]
+	fs := segments[0]
 
 	switch c := root.(type) {
 	case map[string]any:
-		key, ok := s.(string)
-		if !ok {
-			return nil, nil, fmt.Errorf("expected string segment for object, got %T", s)
-		}
+		key := fs.GetName()
 		child, exists := c[key]
 		if !exists {
 			return nil, nil, fmt.Errorf("key %q not found", key)
@@ -23,7 +24,7 @@ func navigate(root any, rootSet func(any), segments []any) (any, func(any), erro
 		return navigate(child, childSet, segments[1:])
 
 	case []any:
-		i, err := toListIndex(s, len(c))
+		i, err := toListIndex(int(fs.GetNumber()), len(c))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -39,21 +40,12 @@ func navigate(root any, rootSet func(any), segments []any) (any, func(any), erro
 	}
 }
 
-func toListIndex(s any, l int) (int, error) {
-	var i int
-	switch v := s.(type) {
-	case int:
-		i = v
-	case uint:
-		i = int(v)
-	default:
-		return 0, fmt.Errorf("expected integer segment for array, got %T", s)
-	}
+func toListIndex(i, l int) (int, error) {
 	if i < 0 {
 		i += l
 	}
 	if i < 0 || i >= l {
-		return 0, fmt.Errorf("array index out of bounds: %d", s)
+		return 0, fmt.Errorf("array index out of bounds: %d", i)
 	}
 	return i, nil
 }

@@ -6,8 +6,6 @@ import (
 	"math"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/target"
-	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -39,12 +37,21 @@ func (o DiffOption) diffMessage(from, to protoreflect.Message) ([]*dpb.Entry, er
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", fd.FullName(), err)
 		}
-		if es == nil {
-			continue
-		}
 		entries = append(entries, es...)
 	}
 	return entries, nil
+}
+
+func segForField(num protoreflect.FieldNumber) *dpb.Segment {
+	return dpb.SegField(dpb.FieldNum(int64(num)))
+}
+
+func segForIndex(i int) *dpb.Segment {
+	return dpb.SegIndex(int64(i))
+}
+
+func segForStringKey(k string) *dpb.Segment {
+	return dpb.SegName(k)
 }
 
 func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.FieldDescriptor) ([]*dpb.Entry, error) {
@@ -56,8 +63,8 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 
 	if lhs_has && !rhs_has {
 		e := &dpb.Entry{}
-		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetDeleted(true)
+		e.SetTargets([]*dpb.Segment{segForField(fd.Number())})
+		e.SetRemove(true)
 		return []*dpb.Entry{e}, nil
 	}
 
@@ -70,8 +77,8 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 			return nil, nil
 		}
 		e := &dpb.Entry{}
-		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetNested(dpb.NewDelta(nested...))
+		e.SetTargets([]*dpb.Segment{segForField(fd.Number())})
+		e.SetNest(dpb.NewDelta(nested...))
 		return []*dpb.Entry{e}, nil
 	}
 
@@ -84,21 +91,21 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 			return nil, nil
 		}
 		e := &dpb.Entry{}
-		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetNested(dpb.NewDelta(nested...))
+		e.SetTargets([]*dpb.Segment{segForField(fd.Number())})
+		e.SetNest(dpb.NewDelta(nested...))
 		return []*dpb.Entry{e}, nil
 	}
 
 	kind := fd.Kind()
 	if kind == protoreflect.MessageKind || kind == protoreflect.GroupKind {
 		if !lhs_has {
-			b, err := encodeValue(to.Get(fd), fd)
+			v, err := toValue(to.Get(fd), fd)
 			if err != nil {
 				return nil, err
 			}
 			e := &dpb.Entry{}
-			e.AppendTargets(target.Fields(fd.Number()))
-			e.SetAssigned(b)
+			e.SetTargets([]*dpb.Segment{segForField(fd.Number())})
+			e.SetAssign(v)
 			return []*dpb.Entry{e}, nil
 		}
 		nested, err := o.diffMessage(from.Get(fd).Message(), to.Get(fd).Message())
@@ -109,8 +116,8 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 			return nil, nil
 		}
 		e := &dpb.Entry{}
-		e.AppendTargets(target.Fields(fd.Number()))
-		e.SetNested(dpb.NewDelta(nested...))
+		e.SetTargets([]*dpb.Segment{segForField(fd.Number())})
+		e.SetNest(dpb.NewDelta(nested...))
 		return []*dpb.Entry{e}, nil
 	}
 
@@ -120,13 +127,13 @@ func (o DiffOption) diffField(from, to protoreflect.Message, fd protoreflect.Fie
 		return nil, nil
 	}
 
-	b, err := encodeValue(rhs_v, fd)
+	v, err := toValue(rhs_v, fd)
 	if err != nil {
 		return nil, err
 	}
 	e := &dpb.Entry{}
-	e.AppendTargets(target.Fields(fd.Number()))
-	e.SetAssigned(b)
+	e.SetTargets([]*dpb.Segment{segForField(fd.Number())})
+	e.SetAssign(v)
 	return []*dpb.Entry{e}, nil
 }
 
@@ -136,13 +143,13 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 	rhs_l := to.Len()
 
 	if lhs_l > rhs_l {
-		indices := make([]int, lhs_l-rhs_l)
-		for i := range indices {
-			indices[i] = rhs_l + i
+		segs := make([]*dpb.Segment, lhs_l-rhs_l)
+		for i := range segs {
+			segs[i] = segForIndex(rhs_l + i)
 		}
 		e := &dpb.Entry{}
-		e.AppendTargets(target.Indices(indices...))
-		e.SetDeleted(true)
+		e.SetTargets(segs)
+		e.SetRemove(true)
 		entries = append(entries, e)
 	}
 
@@ -159,8 +166,8 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 			}
 			if len(nested) > 0 {
 				e := &dpb.Entry{}
-				e.AppendTargets(target.Indices(i))
-				e.SetNested(dpb.NewDelta(nested...))
+				e.SetTargets([]*dpb.Segment{segForIndex(i)})
+				e.SetNest(dpb.NewDelta(nested...))
 				entries = append(entries, e)
 			}
 			continue
@@ -169,25 +176,24 @@ func (o DiffOption) diffList(from, to protoreflect.List, fd protoreflect.FieldDe
 		if scalarValuesEqual(lhs_v, rhs_v, kind) {
 			continue
 		}
-		b, err := encodeValue(rhs_v, fd)
+		v, err := toValue(rhs_v, fd)
 		if err != nil {
 			return nil, fmt.Errorf("[%d]: %w", i, err)
 		}
 		e := &dpb.Entry{}
-		e.AppendTargets(target.Indices(i))
-		e.SetAssigned(b)
+		e.SetTargets([]*dpb.Segment{segForIndex(i)})
+		e.SetAssign(v)
 		entries = append(entries, e)
 	}
 
 	for i := lhs_l; i < rhs_l; i++ {
-		b, err := encodeValue(to.Get(i), fd)
+		v, err := toValue(to.Get(i), fd)
 		if err != nil {
 			return nil, fmt.Errorf("[%d]: %w", i, err)
 		}
 		e := &dpb.Entry{}
-		e.SetNoUpdate(true)
-		e.AppendTargets(target.Indices(-1))
-		e.SetAssigned(b)
+		e.SetTargets([]*dpb.Segment{segForIndex(-1)}) // append
+		e.SetInsert(v)
 		entries = append(entries, e)
 	}
 
@@ -207,13 +213,13 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 		return true
 	})
 	if len(keys_deleted) > 0 {
-		bs, err := encodeMapKeyTargets(keys_deleted, kd.Kind())
+		segs, err := mapKeysToSegments(keys_deleted, kd.Kind())
 		if err != nil {
 			return nil, err
 		}
 		e := &dpb.Entry{}
-		e.SetTargets(bs)
-		e.SetDeleted(true)
+		e.SetTargets(segs)
+		e.SetRemove(true)
 		entries = append(entries, e)
 	}
 
@@ -231,6 +237,10 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 
 	if vd.Kind() == protoreflect.MessageKind || vd.Kind() == protoreflect.GroupKind {
 		for _, d := range diffs {
+			seg, err := mapKeyToSegment(d.key, kd.Kind())
+			if err != nil {
+				return nil, err
+			}
 			if d.has {
 				nested, err := o.diffMessage(d.lhs_v.Message(), d.rhs_v.Message())
 				if err != nil {
@@ -239,26 +249,18 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 				if len(nested) == 0 {
 					continue
 				}
-				bs, err := encodeMapKeyTargets([]protoreflect.MapKey{d.key}, kd.Kind())
-				if err != nil {
-					return nil, err
-				}
 				e := &dpb.Entry{}
-				e.SetTargets(bs)
-				e.SetNested(dpb.NewDelta(nested...))
+				e.SetTargets([]*dpb.Segment{seg})
+				e.SetNest(dpb.NewDelta(nested...))
 				entries = append(entries, e)
 			} else {
-				b, err := encodeValue(d.rhs_v, vd)
+				v, err := toValue(d.rhs_v, vd)
 				if err != nil {
 					return nil, fmt.Errorf("key %v: %w", d.key, err)
 				}
-				bs, err := encodeMapKeyTargets([]protoreflect.MapKey{d.key}, kd.Kind())
-				if err != nil {
-					return nil, err
-				}
 				e := &dpb.Entry{}
-				e.SetTargets(bs)
-				e.SetAssigned(b)
+				e.SetTargets([]*dpb.Segment{seg})
+				e.SetAssign(v)
 				entries = append(entries, e)
 			}
 		}
@@ -267,17 +269,17 @@ func (o DiffOption) diffMap(from, to protoreflect.Map, fd protoreflect.FieldDesc
 			if d.has && scalarValuesEqual(d.lhs_v, d.rhs_v, vd.Kind()) {
 				continue
 			}
-			b, err := encodeValue(d.rhs_v, vd)
+			seg, err := mapKeyToSegment(d.key, kd.Kind())
 			if err != nil {
 				return nil, fmt.Errorf("key %v: %w", d.key, err)
 			}
-			bs, err := encodeMapKeyTargets([]protoreflect.MapKey{d.key}, kd.Kind())
+			v, err := toValue(d.rhs_v, vd)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("key %v: %w", d.key, err)
 			}
 			e := &dpb.Entry{}
-			e.SetTargets(bs)
-			e.SetAssigned(b)
+			e.SetTargets([]*dpb.Segment{seg})
+			e.SetAssign(v)
 			entries = append(entries, e)
 		}
 	}
@@ -309,84 +311,92 @@ func scalarValuesEqual(a, b protoreflect.Value, kind protoreflect.Kind) bool {
 	}
 }
 
-// encodeValue encodes a field value into wire-format bytes for use in assigned entries.
-// It is the inverse of decodeValue in patch.go.
-func encodeValue(v protoreflect.Value, fd protoreflect.FieldDescriptor) ([]byte, error) {
+// toValue converts a protoreflect.Value to a *dpb.Value.
+func toValue(v protoreflect.Value, fd protoreflect.FieldDescriptor) (*dpb.Value, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
-		return dpb.Bool(v.Bool()), nil
+		return dpb.ValB(v.Bool()), nil
 	case protoreflect.EnumKind:
-		return dpb.Enum(v.Enum()), nil
-	case protoreflect.Int32Kind:
-		return dpb.Int(v.Int()), nil
-	case protoreflect.Sint32Kind:
-		return dpb.Signed(v.Int()), nil
-	case protoreflect.Uint32Kind:
-		return dpb.Int(v.Uint()), nil
-	case protoreflect.Int64Kind:
-		return dpb.Int(v.Int()), nil
-	case protoreflect.Sint64Kind:
-		return dpb.Signed(v.Int()), nil
-	case protoreflect.Uint64Kind:
-		return dpb.Int(v.Uint()), nil
-	case protoreflect.Sfixed32Kind:
-		return protowire.AppendFixed32(nil, uint32(v.Int())), nil
-	case protoreflect.Fixed32Kind:
-		return protowire.AppendFixed32(nil, uint32(v.Uint())), nil
-	case protoreflect.FloatKind:
-		return dpb.Float(float32(v.Float())), nil
-	case protoreflect.Sfixed64Kind:
-		return protowire.AppendFixed64(nil, uint64(v.Int())), nil
-	case protoreflect.Fixed64Kind:
-		return protowire.AppendFixed64(nil, v.Uint()), nil
-	case protoreflect.DoubleKind:
-		return dpb.Double(v.Float()), nil
+		return dpb.ValU(uint64(v.Enum())), nil
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return dpb.ValI(v.Int()), nil
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return dpb.ValU(v.Uint()), nil
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		return dpb.ValF(v.Float()), nil
 	case protoreflect.StringKind:
-		return dpb.String(v.String()), nil
+		return dpb.ValS(v.String()), nil
 	case protoreflect.BytesKind:
-		return dpb.Bytes(v.Bytes()), nil
+		return dpb.ValX(v.Bytes()), nil
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		b, err := proto.Marshal(v.Message().Interface())
+		s, err := messageToStruct(v.Message())
 		if err != nil {
-			return nil, fmt.Errorf("marshal: %w", err)
+			return nil, err
 		}
-		return b, nil
+		val := &dpb.Value{}
+		val.SetM(s)
+		return val, nil
 	default:
 		return nil, fmt.Errorf("unsupported kind: %v", fd.Kind())
 	}
 }
 
-// encodeMapKeyTargets encodes map keys into the targets bytes format,
-// matching the decoding logic in target.DecodeKeys.
-func encodeMapKeyTargets(keys []protoreflect.MapKey, kind protoreflect.Kind) ([]byte, error) {
-	var bs []byte
-	for _, k := range keys {
-		switch kind {
-		case protoreflect.BoolKind:
-			v := uint64(0)
-			if k.Bool() {
-				v = 1
-			}
-			bs = protowire.AppendVarint(bs, v)
-		case protoreflect.Int32Kind, protoreflect.Int64Kind:
-			bs = protowire.AppendVarint(bs, uint64(k.Int()))
-		case protoreflect.Sint32Kind, protoreflect.Sint64Kind:
-			bs = protowire.AppendVarint(bs, protowire.EncodeZigZag(k.Int()))
-		case protoreflect.Uint32Kind, protoreflect.Uint64Kind:
-			bs = protowire.AppendVarint(bs, k.Uint())
-		case protoreflect.Sfixed32Kind:
-			bs = protowire.AppendFixed32(bs, uint32(k.Int()))
-		case protoreflect.Fixed32Kind:
-			bs = protowire.AppendFixed32(bs, uint32(k.Uint()))
-		case protoreflect.Sfixed64Kind:
-			bs = protowire.AppendFixed64(bs, uint64(k.Int()))
-		case protoreflect.Fixed64Kind:
-			bs = protowire.AppendFixed64(bs, k.Uint())
-		case protoreflect.StringKind:
-			bs = protowire.AppendString(bs, k.String())
-		default:
-			return nil, fmt.Errorf("unsupported map key kind: %v", kind)
+// messageToStruct converts a protoreflect.Message to a *dpb.Struct.
+func messageToStruct(m protoreflect.Message) (*dpb.Struct, error) {
+	var fields []*dpb.KeyValue
+	var retErr error
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		val, err := toValue(v, fd)
+		if err != nil {
+			retErr = fmt.Errorf("field %s: %w", fd.Name(), err)
+			return false
 		}
+		kv := &dpb.KeyValue{}
+		kv.SetKey(dpb.FieldNum(int64(fd.Number())))
+		kv.SetValue(val)
+		fields = append(fields, kv)
+		return true
+	})
+	if retErr != nil {
+		return nil, retErr
 	}
-	return bs, nil
+	s := &dpb.Struct{}
+	s.SetFields(fields)
+	return s, nil
+}
+
+// mapKeyToSegment converts a MapKey to a *dpb.Segment.
+func mapKeyToSegment(k protoreflect.MapKey, kind protoreflect.Kind) (*dpb.Segment, error) {
+	switch kind {
+	case protoreflect.StringKind:
+		return segForStringKey(k.String()), nil
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return dpb.SegIndex(k.Int()), nil
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return dpb.SegIndex(int64(k.Uint())), nil
+	case protoreflect.BoolKind:
+		if k.Bool() {
+			return dpb.SegIndex(1), nil
+		}
+		return dpb.SegIndex(0), nil
+	default:
+		return nil, fmt.Errorf("unsupported map key kind: %v", kind)
+	}
+}
+
+// mapKeysToSegments converts multiple MapKeys to []*dpb.Segment.
+func mapKeysToSegments(keys []protoreflect.MapKey, kind protoreflect.Kind) ([]*dpb.Segment, error) {
+	segs := make([]*dpb.Segment, len(keys))
+	for i, k := range keys {
+		s, err := mapKeyToSegment(k, kind)
+		if err != nil {
+			return nil, err
+		}
+		segs[i] = s
+	}
+	return segs, nil
 }

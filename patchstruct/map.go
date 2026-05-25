@@ -6,97 +6,113 @@ import (
 	"reflect"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"github.com/lesomnus/protobuf-diff/target"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// mapKeyProtoKind returns the protoreflect.Kind matching the Go map key type,
-// used to reuse target/ref encoding helpers.
-func mapKeyProtoKind(t reflect.Type) (protoreflect.Kind, error) {
-	switch t.Kind() {
-	case reflect.String:
-		return protoreflect.StringKind, nil
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return protoreflect.Int64Kind, nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return protoreflect.Uint64Kind, nil
-	case reflect.Bool:
-		return protoreflect.BoolKind, nil
-	default:
-		return 0, fmt.Errorf("unsupported map key type: %v", t.Kind())
+func decodeMapTargets(v reflect.Value, targets []*dpb.Segment) []reflect.Value {
+	kt := v.Type().Key()
+	var keys []reflect.Value
+	for _, seg := range targets {
+		k := reflect.New(kt).Elem()
+		switch kt.Kind() {
+		case reflect.String:
+			if seg.WhichKind() != dpb.Segment_Name_case {
+				continue
+			}
+			k.SetString(seg.GetName())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			if seg.WhichKind() != dpb.Segment_Index_case {
+				continue
+			}
+			k.SetInt(seg.GetIndex())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			if seg.WhichKind() != dpb.Segment_Index_case {
+				continue
+			}
+			k.SetUint(uint64(seg.GetIndex()))
+		case reflect.Bool:
+			if seg.WhichKind() != dpb.Segment_Name_case {
+				continue
+			}
+			k.SetBool(seg.GetName() == "true")
+		default:
+			continue
+		}
+		keys = append(keys, k)
 	}
+	return keys
 }
 
-// protoKeyToReflect converts a protoreflect.MapKey to a reflect.Value of type t.
-func protoKeyToReflect(k protoreflect.MapKey, t reflect.Type) reflect.Value {
-	r := reflect.New(t).Elem()
-	switch t.Kind() {
-	case reflect.String:
-		r.SetString(k.String())
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		r.SetInt(k.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		r.SetUint(k.Uint())
-	case reflect.Bool:
-		r.SetBool(k.Bool())
+func mapSourceKey(kt reflect.Type, fs *dpb.FieldSegment) (reflect.Value, bool) {
+	if fs == nil {
+		return reflect.Value{}, false
 	}
-	return r
+	k := reflect.New(kt).Elem()
+	switch kt.Kind() {
+	case reflect.String:
+		k.SetString(fs.GetName())
+		return k, true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		k.SetInt(fs.GetNumber())
+		return k, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		k.SetUint(uint64(fs.GetNumber()))
+		return k, true
+	}
+	return reflect.Value{}, false
 }
 
 func (o PatchOption) patchMap(v reflect.Value, entry *dpb.Entry) error {
-	kt := v.Type().Key()
-	kind, err := mapKeyProtoKind(kt)
-	if err != nil {
-		return err
-	}
-
-	protoKeys, err := target.DecodeKeys(entry.GetTargets(), kind)
-	if err != nil {
-		return fmt.Errorf("decode keys: %w", err)
-	}
-	if len(protoKeys) == 0 {
+	keys := decodeMapTargets(v, entry.GetTargets())
+	if len(keys) == 0 {
+		if entry.WhichKind() == dpb.Entry_Nest_case {
+			return fmt.Errorf("nest on map requires targets")
+		}
 		return nil
 	}
 
-	keys := make([]reflect.Value, len(protoKeys))
-	for i, k := range protoKeys {
-		keys[i] = protoKeyToReflect(k, kt)
-	}
-
-	check := func(k reflect.Value) bool {
-		exists := v.MapIndex(k).IsValid()
-		if !exists && entry.GetNoInsert() {
-			return false
-		}
-		if exists && entry.GetNoUpdate() {
-			return false
-		}
-		return true
-	}
+	kt := v.Type().Key()
+	vt := v.Type().Elem()
 
 	op := func(k reflect.Value) error { return nil }
 	after := func() error { return nil }
 
-	vt := v.Type().Elem()
-
 	switch entry.WhichKind() {
-	case dpb.Entry_Deleted_case:
-		if entry.GetDeleted() {
+	case dpb.Entry_Remove_case:
+		if entry.GetRemove() {
 			op = func(k reflect.Value) error {
 				v.SetMapIndex(k, reflect.Value{})
 				return nil
 			}
 		}
 
-	case dpb.Entry_Assigned_case:
+	case dpb.Entry_Test_case:
 		var val reflect.Value
 		op = func(k reflect.Value) error {
-			if !check(k) {
+			mv := v.MapIndex(k)
+			if !mv.IsValid() {
+				return fmt.Errorf("test failed at key %v: absent", k)
+			}
+			if !val.IsValid() {
+				var err error
+				val, err = decodeValue(entry.GetTest(), vt)
+				if err != nil {
+					return fmt.Errorf("decode test value: %w", err)
+				}
+			}
+			if mv.Interface() != val.Interface() {
+				return fmt.Errorf("test failed at key %v", k)
+			}
+			return nil
+		}
+
+	case dpb.Entry_Insert_case:
+		var val reflect.Value
+		op = func(k reflect.Value) error {
+			if v.MapIndex(k).IsValid() {
 				return nil
 			}
 			if !val.IsValid() {
-				bv, err := decodeValue(entry.GetAssigned(), vt)
+				bv, err := decodeValue(entry.GetInsert(), vt)
 				if err != nil {
 					return fmt.Errorf("decode: %w", err)
 				}
@@ -107,92 +123,63 @@ func (o PatchOption) patchMap(v reflect.Value, entry *dpb.Entry) error {
 			return nil
 		}
 
-	case dpb.Entry_Merged_case:
-		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
-
-	case dpb.Entry_Copied_case:
-		srcKey, err := ref.DecodeKey(entry.GetCopied(), kind)
-		if err != nil {
-			return fmt.Errorf("copy: decode source key: %w", err)
-		}
-		srcRV := protoKeyToReflect(srcKey, kt)
-		srcVal := v.MapIndex(srcRV)
-		if !srcVal.IsValid() {
-			op = func(k reflect.Value) error {
-				if !check(k) {
-					return nil
-				}
-				v.SetMapIndex(k, reflect.Value{})
-				return nil
-			}
-		} else {
-			op = func(k reflect.Value) error {
-				if !check(k) {
-					return nil
-				}
-				v.SetMapIndex(k, srcVal)
-				return nil
-			}
-		}
-
-	case dpb.Entry_Scattered_case:
-		srcKey, err := ref.DecodeKey(entry.GetScattered(), kind)
-		if err != nil {
-			return fmt.Errorf("scatter: decode source key: %w", err)
-		}
-		srcRV := protoKeyToReflect(srcKey, kt)
-		srcVal := v.MapIndex(srcRV)
-		if !srcVal.IsValid() {
-			op = func(k reflect.Value) error {
-				if !check(k) {
-					return nil
-				}
-				v.SetMapIndex(k, reflect.Value{})
-				return nil
-			}
-		} else {
-			op = func(k reflect.Value) error {
-				if !check(k) {
-					return nil
-				}
-				v.SetMapIndex(k, srcVal)
-				return nil
-			}
-		}
-		after = func() error {
-			v.SetMapIndex(srcRV, reflect.Value{})
-			return nil
-		}
-
-	case dpb.Entry_Swapped_case:
-		srcKey, err := ref.DecodeKey(entry.GetSwapped(), kind)
-		if err != nil {
-			return fmt.Errorf("swap: decode source key: %w", err)
-		}
-		srcRV := protoKeyToReflect(srcKey, kt)
-		tmp := v.MapIndex(srcRV)
-
+	case dpb.Entry_Assign_case:
+		var val reflect.Value
 		op = func(k reflect.Value) error {
-			w := v.MapIndex(k)
-			if tmp.IsValid() {
-				v.SetMapIndex(k, tmp)
-			} else {
-				v.SetMapIndex(k, reflect.Value{})
+			if !val.IsValid() {
+				bv, err := decodeValue(entry.GetAssign(), vt)
+				if err != nil {
+					return fmt.Errorf("decode: %w", err)
+				}
+				val = reflect.New(vt).Elem()
+				setField(val, bv)
 			}
-			tmp = w
-			return nil
-		}
-		after = func() error {
-			if tmp.IsValid() {
-				v.SetMapIndex(srcRV, tmp)
-			} else {
-				v.SetMapIndex(srcRV, reflect.Value{})
-			}
+			v.SetMapIndex(k, val)
 			return nil
 		}
 
-	case dpb.Entry_Nested_case:
-		delta := entry.GetNested()
+	case dpb.Entry_Move_case:
+		srcRV, ok := mapSourceKey(kt, entry.GetMove())
+		if !ok {
+			return fmt.Errorf("move: cannot decode source key")
+		}
+		srcVal := v.MapIndex(srcRV)
+		if !srcVal.IsValid() {
+			op = func(k reflect.Value) error {
+				v.SetMapIndex(k, reflect.Value{})
+				return nil
+			}
+		} else {
+			op = func(k reflect.Value) error {
+				v.SetMapIndex(k, srcVal)
+				return nil
+			}
+			after = func() error {
+				v.SetMapIndex(srcRV, reflect.Value{})
+				return nil
+			}
+		}
+
+	case dpb.Entry_Copy_case:
+		srcRV, ok := mapSourceKey(kt, entry.GetCopy())
+		if !ok {
+			return fmt.Errorf("copy: cannot decode source key")
+		}
+		srcVal := v.MapIndex(srcRV)
+		if !srcVal.IsValid() {
+			op = func(k reflect.Value) error {
+				v.SetMapIndex(k, reflect.Value{})
+				return nil
+			}
+		} else {
+			op = func(k reflect.Value) error {
+				v.SetMapIndex(k, srcVal)
+				return nil
+			}
+		}
+
+	case dpb.Entry_Nest_case:
+		delta := entry.GetNest()
 		et := vt
 		for et.Kind() == reflect.Pointer {
 			et = et.Elem()
@@ -206,7 +193,6 @@ func (o PatchOption) patchMap(v reflect.Value, entry *dpb.Entry) error {
 			if !mv.IsValid() {
 				return nil
 			}
-			// Map values are not addressable; create an addressable copy.
 			ptr := reflect.New(vt)
 			ptr.Elem().Set(mv)
 			elem := ptr.Elem()

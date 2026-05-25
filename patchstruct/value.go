@@ -1,70 +1,96 @@
 package patchstruct
 
 import (
-	"errors"
 	"fmt"
-	"math"
 	"reflect"
 
-	"google.golang.org/protobuf/encoding/protowire"
+	"github.com/lesomnus/protobuf-diff/dpb"
 )
 
-func decodeValue(b []byte, t reflect.Type) (reflect.Value, error) {
+// decodeValue converts a *dpb.Value to a reflect.Value of the target type.
+func decodeValue(v *dpb.Value, t reflect.Type) (reflect.Value, error) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 
 	r := reflect.New(t).Elem()
+	if v == nil || v.WhichKind() == dpb.Value_N_case {
+		return r, nil
+	}
+
 	switch t.Kind() {
 	case reflect.Bool:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return reflect.Value{}, errors.New("invalid varint")
+		switch v.WhichKind() {
+		case dpb.Value_B_case:
+			r.SetBool(v.GetB())
+		case dpb.Value_I_case:
+			r.SetBool(v.GetI() != 0)
+		case dpb.Value_U_case:
+			r.SetBool(v.GetU() != 0)
+		default:
+			return reflect.Value{}, fmt.Errorf("cannot convert %v to bool", v.WhichKind())
 		}
-		r.SetBool(v != 0)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return reflect.Value{}, errors.New("invalid varint")
+		switch v.WhichKind() {
+		case dpb.Value_I_case:
+			r.SetInt(v.GetI())
+		case dpb.Value_U_case:
+			r.SetInt(int64(v.GetU()))
+		case dpb.Value_F_case:
+			r.SetInt(int64(v.GetF()))
+		case dpb.Value_B_case:
+			if v.GetB() {
+				r.SetInt(1)
+			}
+		default:
+			return reflect.Value{}, fmt.Errorf("cannot convert %v to int", v.WhichKind())
 		}
-		r.SetInt(int64(v))
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		v, n := protowire.ConsumeVarint(b)
-		if n < 0 {
-			return reflect.Value{}, errors.New("invalid varint")
+		switch v.WhichKind() {
+		case dpb.Value_U_case:
+			r.SetUint(v.GetU())
+		case dpb.Value_I_case:
+			r.SetUint(uint64(v.GetI()))
+		case dpb.Value_F_case:
+			r.SetUint(uint64(v.GetF()))
+		default:
+			return reflect.Value{}, fmt.Errorf("cannot convert %v to uint", v.WhichKind())
 		}
-		r.SetUint(v)
 
-	case reflect.Float32:
-		v, n := protowire.ConsumeFixed32(b)
-		if n < 0 {
-			return reflect.Value{}, errors.New("invalid fixed32")
+	case reflect.Float32, reflect.Float64:
+		switch v.WhichKind() {
+		case dpb.Value_F_case:
+			r.SetFloat(v.GetF())
+		case dpb.Value_I_case:
+			r.SetFloat(float64(v.GetI()))
+		case dpb.Value_U_case:
+			r.SetFloat(float64(v.GetU()))
+		default:
+			return reflect.Value{}, fmt.Errorf("cannot convert %v to float", v.WhichKind())
 		}
-		r.SetFloat(float64(math.Float32frombits(v)))
-
-	case reflect.Float64:
-		v, n := protowire.ConsumeFixed64(b)
-		if n < 0 {
-			return reflect.Value{}, errors.New("invalid fixed64")
-		}
-		r.SetFloat(math.Float64frombits(v))
 
 	case reflect.String:
-		r.SetString(string(b))
+		if v.WhichKind() != dpb.Value_S_case {
+			return reflect.Value{}, fmt.Errorf("cannot convert %v to string", v.WhichKind())
+		}
+		r.SetString(v.GetS())
 
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			cp := make([]byte, len(b))
-			copy(cp, b)
+			if v.WhichKind() != dpb.Value_X_case {
+				return reflect.Value{}, fmt.Errorf("cannot convert %v to []byte", v.WhichKind())
+			}
+			cp := make([]byte, len(v.GetX()))
+			copy(cp, v.GetX())
 			r.Set(reflect.ValueOf(cp).Convert(t))
 		} else {
-			return reflect.Value{}, fmt.Errorf("unimplemented: %v", t)
+			return reflect.Value{}, fmt.Errorf("unimplemented slice type: %v", t)
 		}
 
 	default:
-		return reflect.Value{}, fmt.Errorf("unimplemented: %v", t)
+		return reflect.Value{}, fmt.Errorf("unimplemented type: %v", t)
 	}
 
 	return r, nil

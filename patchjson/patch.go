@@ -3,10 +3,8 @@ package patchjson
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/target"
 )
 
 type Patcher interface {
@@ -17,7 +15,6 @@ type Patcher interface {
 type Option func(*PatchOption)
 
 // WithHook registers a hook that is called each time a value is modified.
-// The hook receives the path of PathEntries leading to the modified value.
 func WithHook(h func(pe []dpb.PathEntry, before, after dpb.Frame, entry *dpb.Entry)) Option {
 	return func(o *PatchOption) {
 		if o.cursor == nil {
@@ -36,29 +33,55 @@ func (f Frame) String() string {
 	return string(b)
 }
 
-func (f Frame) Apply(entry *dpb.Entry) (dpb.Frame, error) {
-	switch entry.WhichKind() {
-	case dpb.Entry_Assigned_case:
-		v, err := decodeValue(entry.GetAssigned())
-		if err != nil {
-			return nil, fmt.Errorf("apply: %w", err)
-		}
-		return Frame{Value: v}, nil
-	case dpb.Entry_Deleted_case:
-		if entry.GetDeleted() {
-			return Frame{}, nil
-		}
-		return f, nil
+// Value creates a *dpb.Value from any JSON-compatible Go value.
+func Value(v any) *dpb.Value {
+	return anyToValue(v)
+}
+
+func anyToValue(v any) *dpb.Value {
+	if v == nil {
+		return dpb.ValNull()
+	}
+	switch t := v.(type) {
+	case string:
+		return dpb.ValS(t)
+	case bool:
+		return dpb.ValB(t)
+	case float64:
+		return dpb.ValF(t)
+	case int:
+		return dpb.ValI(int64(t))
+	case int64:
+		return dpb.ValI(t)
+	case []byte:
+		return dpb.ValX(t)
 	default:
-		return nil, fmt.Errorf("Apply: not implemented for %q", entry.WhichKind())
+		return dpb.ValNull()
 	}
 }
 
-// Value encodes v as JSON bytes for use in Entry.SetAssigned and similar fields.
-// patchjson expects assigned bytes to be JSON-encoded values.
-func Value(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
+func dpbValueToAny(v *dpb.Value) any {
+	if v == nil {
+		return nil
+	}
+	switch v.WhichKind() {
+	case dpb.Value_N_case:
+		return nil
+	case dpb.Value_S_case:
+		return v.GetS()
+	case dpb.Value_B_case:
+		return v.GetB()
+	case dpb.Value_I_case:
+		return float64(v.GetI())
+	case dpb.Value_U_case:
+		return float64(v.GetU())
+	case dpb.Value_F_case:
+		return v.GetF()
+	case dpb.Value_X_case:
+		return v.GetX()
+	default:
+		return nil
+	}
 }
 
 func Patch(v any, delta *dpb.Delta, opts ...Option) error {
@@ -70,7 +93,6 @@ func Patch(v any, delta *dpb.Delta, opts ...Option) error {
 }
 
 type PatchOption struct {
-	// cursor is a pointer so all value-receiver copies share the same path state.
 	cursor *dpb.Cursor
 }
 
@@ -94,7 +116,6 @@ func (o PatchOption) Patch(v any, delta *dpb.Delta) error {
 	return nil
 }
 
-// cursorEnter pushes a PathEntry and returns a function that pops it.
 func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
 	if o.cursor == nil {
 		return func() {}
@@ -103,24 +124,17 @@ func (o PatchOption) cursorEnter(e dpb.PathEntry) func() {
 	return func() { o.cursor.Pop() }
 }
 
-// cursorNotify fires all hooks with the current cursor path and entry.
 func (o PatchOption) cursorNotify(before, after dpb.Frame, entry *dpb.Entry) {
 	if o.cursor != nil {
 		o.cursor.Notify(before, after, entry)
 	}
 }
 
-func segmentToPathEntry(s any) dpb.PathEntry {
-	switch s := s.(type) {
-	case string:
-		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: s}
-	case int:
-		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: s}
-	case uint:
-		return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(s)}
-	default:
-		return dpb.PathEntry{}
+func fieldSegToPathEntry(fs *dpb.FieldSegment) dpb.PathEntry {
+	if fs.HasName() && fs.GetName() != "" {
+		return dpb.PathEntry{Kind: dpb.PathEntryField, Key: fs.GetName()}
 	}
+	return dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: int(fs.GetNumber())}
 }
 
 func unwrapRoot(v any) (any, func(any), error) {
@@ -137,67 +151,38 @@ func unwrapRoot(v any) (any, func(any), error) {
 			return d, func(nv any) { *c = nv }, nil
 		}
 	}
-
 	return nil, nil, fmt.Errorf("value must be map[string]any or *[]any, got %T", v)
 }
 
 func (o PatchOption) patch(root any, rootSet func(any), entry *dpb.Entry) error {
-	segments := slices.Collect(entry.Path().Seq())
-
-	var s any
-	if len(entry.GetTargets()) == 0 {
-		if len(segments) == 0 {
-			return fmt.Errorf("empty path and no targets")
-		}
-		segments, s = segments[:len(segments)-1], segments[len(segments)-1]
-	}
+	pathSegs := entry.GetPath().GetSegments()
 
 	if o.cursor != nil {
-		for _, seg := range segments {
-			o.cursor.Push(segmentToPathEntry(seg))
+		for _, fs := range pathSegs {
+			o.cursor.Push(fieldSegToPathEntry(fs))
 		}
 		defer func() {
-			for range segments {
+			for range pathSegs {
 				o.cursor.Pop()
 			}
 		}()
 	}
 
-	container, containerSet, err := navigate(root, rootSet, segments)
+	container, containerSet, err := navigate(root, rootSet, pathSegs)
 	if err != nil {
 		return fmt.Errorf("navigate path: %w", err)
 	}
 
 	switch c := container.(type) {
 	case map[string]any:
-		if s != nil {
-			key, ok := s.(string)
-			if !ok {
-				return fmt.Errorf("invalid target segment for object: %T", s)
-			}
-			entry.AppendTargets(target.StringKeys(key))
-		}
 		return o.patchMap(c, entry)
-
 	case []any:
-		if s != nil {
-			switch sv := s.(type) {
-			case int:
-				entry.AppendTargets(target.Indices(sv))
-			case uint:
-				entry.AppendTargets(target.Indices(int(sv)))
-			default:
-				return fmt.Errorf("invalid target segment for array: %T", s)
-			}
-		}
 		return o.patchList(c, containerSet, entry)
-
 	default:
 		return fmt.Errorf("cannot patch %T", container)
 	}
 }
 
-// patchField applies a nested delta to a child container, propagating slice write-backs via set.
 func (o PatchOption) patchField(v any, set func(any), delta *dpb.Delta) error {
 	switch c := v.(type) {
 	case map[string]any:
@@ -222,15 +207,4 @@ func (o PatchOption) patchField(v any, set func(any), delta *dpb.Delta) error {
 	default:
 		return fmt.Errorf("nested delta cannot be applied to %T", v)
 	}
-}
-
-func decodeValue(b []byte) (any, error) {
-	if len(b) == 0 {
-		return nil, nil
-	}
-	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
-		return nil, err
-	}
-	return v, nil
 }

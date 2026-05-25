@@ -5,229 +5,139 @@ import (
 	"fmt"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"github.com/lesomnus/protobuf-diff/target"
-	"google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) error {
-	targets, err := target.DecodeFieldNumbers(entry.GetTargets())
-	if err != nil {
-		return fmt.Errorf("decode targets: %w", err)
-	}
+func (o PatchOption) patchMessage(c protoreflect.Message, _ protoreflect.FieldDescriptor, targets []*dpb.Segment, entry *dpb.Entry) error {
 	if len(targets) == 0 {
+		if entry.WhichKind() == dpb.Entry_Nest_case {
+			return o.PatchField(c, nil, entry.GetNest())
+		}
 		return nil
 	}
 
 	fields := c.Descriptor().Fields()
-	fd0 := fields.ByNumber(targets[0])
-	if fd0 == nil {
-		return fmt.Errorf("field [%d] not found in %q", targets[0], c.Descriptor().FullName())
-	}
 
 	notify_leaf := true
-	op := func(fd protoreflect.FieldDescriptor) error {
-		return nil
-	}
-	check := func(fd protoreflect.FieldDescriptor) bool {
-		exists := true
-		if fd.HasPresence() {
-			exists = c.Has(fd)
-		}
-
-		if !exists && entry.GetNoInsert() {
-			return false
-		}
-		if exists && entry.GetNoUpdate() {
-			return false
-		}
-		return true
-	}
+	op := func(fd protoreflect.FieldDescriptor) error { return nil }
 
 	switch entry.WhichKind() {
-	case dpb.Entry_Deleted_case:
-		if entry.GetDeleted() {
+	case dpb.Entry_Remove_case:
+		if entry.GetRemove() {
 			op = func(fd protoreflect.FieldDescriptor) error {
 				c.Clear(fd)
 				return nil
 			}
 		}
 
-	case dpb.Entry_Assigned_case:
+	case dpb.Entry_Test_case:
+		val := entry.GetTest()
 		op = func(fd protoreflect.FieldDescriptor) error {
-			if !check(fd) {
-				return nil
-			}
-
-			v, err := o.decodeValue(entry.GetAssigned(), fd)
+			current := c.Get(fd)
+			expected, err := valueToProtoValue(val, fd, o.Types)
 			if err != nil {
-				return fmt.Errorf("decode: %w", err)
+				return fmt.Errorf("test: decode: %w", err)
 			}
-
-			c.Set(fd, v)
+			if !protoValueEqual(current, expected, fd.Kind()) {
+				return fmt.Errorf("test failed at %s", fd.FullName())
+			}
 			return nil
 		}
-
-	case dpb.Entry_Merged_case:
-		var v proto.Message
-		op = func(fd protoreflect.FieldDescriptor) error {
-			if !check(fd) {
-				return nil
-			}
-			if fd.Kind() != protoreflect.MessageKind {
-				return fmt.Errorf("field must be message type %q", fd.FullName())
-			}
-			if v == nil {
-				m := dynamicpb.NewMessageType(fd.Message()).New()
-				v = m.Interface()
-				if err := proto.Unmarshal(entry.GetMerged(), v); err != nil {
-					return fmt.Errorf("unmarshal: %w", err)
-				}
-			}
-
-			w := c.Mutable(fd)
-			proto.Merge(w.Message().Interface(), v)
-			return nil
-		}
-
-	case dpb.Entry_Copied_case:
-		k, err := ref.DecodeField(entry.GetCopied())
-		if err != nil {
-			return fmt.Errorf("copy: unmarshal source field number: %w", err)
-		}
-
-		fd_src := fields.ByNumber(k)
-		if !c.Has(fd_src) {
-			// Source field is not set, so clear target fields without setting.
-			op = func(fd protoreflect.FieldDescriptor) error {
-				if !check(fd) {
-					return nil
-				}
-
-				c.Clear(fd)
-				return nil
-			}
-		} else {
-			v := c.Get(fd_src)
-			op = func(fd protoreflect.FieldDescriptor) error {
-				if !check(fd) {
-					return nil
-				}
-
-				w, err := cast(v, fd_src.Kind(), fd.Kind())
-				if err != nil {
-					return err
-				}
-
-				c.Set(fd, w)
-				return nil
-			}
-		}
-
-	case dpb.Entry_Scattered_case:
-		k, err := ref.DecodeField(entry.GetScattered())
-		if err != nil {
-			return fmt.Errorf("scatter: unmarshal source field number: %w", err)
-		}
-
-		fd_src := fields.ByNumber(k)
-		if !c.Has(fd_src) {
-			// Source field is not set, so clear target fields without setting.
-			op = func(fd protoreflect.FieldDescriptor) error {
-				if !check(fd) {
-					return nil
-				}
-
-				c.Clear(fd)
-				return nil
-			}
-		} else {
-			v := c.Get(fd_src)
-			done := false
-			op = func(fd protoreflect.FieldDescriptor) error {
-				if !check(fd) {
-					return nil
-				}
-
-				w, err := cast(v, fd_src.Kind(), fd.Kind())
-				if err != nil {
-					return err
-				}
-
-				c.Set(fd, w)
-				if !done {
-					c.Clear(fd_src)
-					done = true
-				}
-				return nil
-			}
-		}
-
-	case dpb.Entry_Swapped_case:
-		target, err := ref.DecodeField(entry.GetSwapped())
-		if err != nil {
-			return fmt.Errorf("swap: unmarshal target field number: %w", err)
-		}
-
-		op = func(fd_src protoreflect.FieldDescriptor) error {
-			fd_dst := fields.ByNumber(target)
-			if fd_dst == nil {
-				return nil
-			}
-
-			ka := fd_src.Kind()
-			kb := fd_dst.Kind()
-
-			va, err := cast(c.Get(fd_src), ka, kb)
-			if err != nil {
-				return fmt.Errorf("cast src: %w", err)
-			}
-
-			vb, err := cast(c.Get(fd_dst), kb, ka)
-			if err != nil {
-				return fmt.Errorf("cast dst: %w", err)
-			}
-
-			c.Set(fd_src, vb)
-			c.Set(fd_dst, va)
-			return nil
-		}
-
-	case dpb.Entry_Edited_case:
-		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
-
-	case dpb.Entry_Nested_case:
 		notify_leaf = false
-		delta := entry.GetNested()
-		op = func(fd protoreflect.FieldDescriptor) error {
-			if !check(fd) {
-				return nil
-			}
 
+	case dpb.Entry_Insert_case:
+		val := entry.GetInsert()
+		op = func(fd protoreflect.FieldDescriptor) error {
+			if fd.HasPresence() && c.Has(fd) {
+				return nil // already present — no-op for insert
+			}
+			v, err := valueToProtoValue(val, fd, o.Types)
+			if err != nil {
+				return fmt.Errorf("insert: decode: %w", err)
+			}
+			if v.IsValid() {
+				c.Set(fd, v)
+			}
+			return nil
+		}
+
+	case dpb.Entry_Assign_case:
+		val := entry.GetAssign()
+		op = func(fd protoreflect.FieldDescriptor) error {
+			v, err := valueToProtoValue(val, fd, o.Types)
+			if err != nil {
+				return fmt.Errorf("assign: decode: %w", err)
+			}
+			if v.IsValid() {
+				c.Set(fd, v)
+			} else {
+				c.Clear(fd)
+			}
+			return nil
+		}
+
+	case dpb.Entry_Move_case:
+		src := entry.GetMove()
+		fd_src := findFieldByFieldSegment(fields, src)
+		if fd_src == nil {
+			return nil
+		}
+		v := c.Get(fd_src)
+		hasSrc := c.Has(fd_src)
+		cleared := false
+		op = func(fd protoreflect.FieldDescriptor) error {
+			if !hasSrc {
+				c.Clear(fd)
+			} else {
+				w, err := cast(v, fd_src.Kind(), fd.Kind())
+				if err != nil {
+					return err
+				}
+				c.Set(fd, w)
+			}
+			if !cleared {
+				c.Clear(fd_src)
+				cleared = true
+			}
+			return nil
+		}
+
+	case dpb.Entry_Copy_case:
+		src := entry.GetCopy()
+		fd_src := findFieldByFieldSegment(fields, src)
+		if fd_src == nil {
+			return nil
+		}
+		hasSrc := c.Has(fd_src)
+		v := c.Get(fd_src)
+		op = func(fd protoreflect.FieldDescriptor) error {
+			if !hasSrc {
+				c.Clear(fd)
+			} else {
+				w, err := cast(v, fd_src.Kind(), fd.Kind())
+				if err != nil {
+					return err
+				}
+				c.Set(fd, w)
+			}
+			return nil
+		}
+
+	case dpb.Entry_Nest_case:
+		notify_leaf = false
+		delta := entry.GetNest()
+		op = func(fd protoreflect.FieldDescriptor) error {
 			kind := fd.Kind()
 			switch {
 			case fd.IsList():
-				sub := c.Mutable(fd).List()
-				if err := o.PatchField(sub, fd, delta); err != nil {
-					return fmt.Errorf("field %s: %w", fd.FullName(), err)
-				}
-
+				return o.PatchField(c.Mutable(fd).List(), fd, delta)
 			case fd.IsMap():
-				sub := c.Mutable(fd).Map()
-				if err := o.PatchField(sub, fd, delta); err != nil {
-					return fmt.Errorf("field %s: %w", fd.FullName(), err)
-				}
-
+				return o.PatchField(c.Mutable(fd).Map(), fd, delta)
 			case kind == protoreflect.MessageKind || kind == protoreflect.GroupKind:
-				sub := c.Mutable(fd).Message()
-				return o.PatchField(sub, fd, delta)
-
+				return o.PatchField(c.Mutable(fd).Message(), fd, delta)
 			default:
-				return fmt.Errorf("field %s: nested delta cannot be applied to %q", fd.FullName(), kind.String())
+				return fmt.Errorf("field %s: nest cannot be applied to %q", fd.FullName(), kind)
 			}
-			return nil
 		}
 
 	default:
@@ -235,8 +145,8 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 	}
 
 	errs := make([]error, 0, len(targets))
-	for _, i := range targets {
-		fd := fields.ByNumber(i)
+	for _, seg := range targets {
+		fd := messageFieldBySeg(fields, seg)
 		if fd == nil {
 			continue
 		}
@@ -245,11 +155,28 @@ func (o PatchOption) patchMessage(c protoreflect.Message, entry *dpb.Entry) erro
 		before := Frame{Descriptor: fd, Value: c.Get(fd)}
 		err := op(fd)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("[%d]: %w", i, err))
+			errs = append(errs, fmt.Errorf("field %s: %w", fd.FullName(), err))
 		} else if notify_leaf {
 			o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(fd)}, entry)
 		}
 		leave()
 	}
 	return errors.Join(errs...)
+}
+
+// messageFieldBySeg resolves a Segment to a FieldDescriptor within a message.
+func messageFieldBySeg(fields protoreflect.FieldDescriptors, seg *dpb.Segment) protoreflect.FieldDescriptor {
+	switch seg.WhichKind() {
+	case dpb.Segment_Name_case:
+		return fields.ByName(protoreflect.Name(seg.GetName()))
+	case dpb.Segment_Index_case:
+		num := seg.GetIndex()
+		if num <= 0 {
+			return nil
+		}
+		return fields.ByNumber(protoreflect.FieldNumber(num))
+	case dpb.Segment_Field_case:
+		return findFieldByFieldSegment(fields, seg.GetField())
+	}
+	return nil
 }

@@ -3,10 +3,8 @@ package patchstruct
 import (
 	"fmt"
 	"reflect"
-	"slices"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/target"
 )
 
 type Patcher interface {
@@ -42,18 +40,9 @@ func (o PatchOption) PatchField(v reflect.Value, delta *dpb.Delta) error {
 }
 
 func (o PatchOption) patch(v reflect.Value, entry *dpb.Entry) error {
-	segments := slices.Collect(entry.Path().Seq())
+	pathSegs := entry.GetPath().GetSegments()
 
-	var s any
-	if len(entry.GetTargets()) == 0 {
-		if len(segments) == 0 {
-			return fmt.Errorf("empty path and no targets")
-		}
-
-		segments, s = segments[:len(segments)-1], segments[len(segments)-1]
-	}
-
-	v, err := Navigate(v, segments)
+	v, err := Navigate(v, pathSegs)
 	if err != nil {
 		return fmt.Errorf("navigate path: %w", err)
 	}
@@ -62,73 +51,16 @@ func (o PatchOption) patch(v reflect.Value, entry *dpb.Entry) error {
 		if v.IsNil() {
 			return fmt.Errorf("nil pointer at end of path")
 		}
-
 		v = v.Elem()
 	}
 
 	switch v.Kind() {
 	case reflect.Struct:
-		if s != nil {
-			switch s := s.(type) {
-			case string:
-				entry.AppendTargets(target.StringKeys(s))
-
-			case int:
-				n := v.NumField()
-				if s < 0 {
-					s += n
-				}
-				if s < 0 || s >= n {
-					return fmt.Errorf("field index out of range: %d", s)
-				}
-				entry.AppendTargets(target.StringKeys(v.Type().Field(s).Name))
-
-			case uint:
-				if int(s) >= v.NumField() {
-					return fmt.Errorf("field index out of range: %d", s)
-				}
-				entry.AppendTargets(target.StringKeys(v.Type().Field(int(s)).Name))
-
-			default:
-				return fmt.Errorf("invalid target segment type for struct: %T", s)
-			}
-		}
 		return o.patchStruct(v, entry)
-
 	case reflect.Slice:
-		if s != nil {
-			i := 0
-			switch s := s.(type) {
-			case int:
-				i = s
-			case uint:
-				i = int(s)
-			default:
-				return fmt.Errorf("invalid target segment type for slice: %T", s)
-			}
-
-			entry.AppendTargets(target.Indices(i))
-		}
 		return o.patchSlice(v, entry)
-
 	case reflect.Map:
-		if s != nil {
-			var k target.Targets
-			switch s := s.(type) {
-			case string:
-				k = target.StringKeys(s)
-			case int:
-				k = target.SignedKeys(s)
-			case uint:
-				k = target.UnsignedKeys(s)
-			default:
-				return fmt.Errorf("invalid target segment type for map: %T", s)
-			}
-
-			entry.AppendTargets(k)
-		}
 		return o.patchMap(v, entry)
-
 	default:
 		return fmt.Errorf("unsupported container type: %v", v.Kind())
 	}

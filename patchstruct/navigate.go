@@ -3,10 +3,12 @@ package patchstruct
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/lesomnus/protobuf-diff/dpb"
 )
 
-func Navigate(v reflect.Value, segments []any) (reflect.Value, error) {
-	for _, s := range segments {
+func Navigate(v reflect.Value, segments []*dpb.FieldSegment) (reflect.Value, error) {
+	for _, fs := range segments {
 		for v.Kind() == reflect.Pointer {
 			if v.IsNil() {
 				return reflect.Value{}, fmt.Errorf("nil pointer")
@@ -16,50 +18,32 @@ func Navigate(v reflect.Value, segments []any) (reflect.Value, error) {
 
 		switch v.Kind() {
 		case reflect.Struct:
-			switch s := s.(type) {
-			case string:
-				f := v.FieldByName(s)
+			if fs.HasName() && fs.GetName() != "" {
+				f := v.FieldByName(fs.GetName())
 				if !f.IsValid() {
-					return reflect.Value{}, fmt.Errorf("field %q not found", s)
+					return reflect.Value{}, fmt.Errorf("field %q not found", fs.GetName())
 				}
 				v = f
-
-			case int:
+			} else {
 				n := v.NumField()
-				if s < 0 {
-					s += n
+				idx := int(fs.GetNumber())
+				if idx < 0 {
+					idx += n
 				}
-				if s < 0 || s >= n {
-					return reflect.Value{}, fmt.Errorf("field index out of range: %d", s)
+				if idx < 0 || idx >= n {
+					return reflect.Value{}, fmt.Errorf("field index out of range: %d", fs.GetNumber())
 				}
-				v = v.Field(s)
-
-			case uint:
-				if int(s) >= v.NumField() {
-					return reflect.Value{}, fmt.Errorf("field index out of range: %d", s)
-				}
-				v = v.Field(int(s))
-
-			default:
-				return reflect.Value{}, fmt.Errorf("invalid segment type for struct: %T", s)
+				v = v.Field(idx)
 			}
 
 		case reflect.Slice:
 			l := v.Len()
-			var i int
-			switch s := s.(type) {
-			case int:
-				i = s
-			case uint:
-				i = int(s)
-			default:
-				return reflect.Value{}, fmt.Errorf("invalid segment type for slice: %T", s)
-			}
+			i := int(fs.GetNumber())
 			if i < 0 {
 				i += l
 			}
 			if i < 0 || i >= l {
-				return reflect.Value{}, fmt.Errorf("slice index out of bounds: %d", s)
+				return reflect.Value{}, fmt.Errorf("slice index out of bounds: %d", fs.GetNumber())
 			}
 			v = v.Index(i)
 

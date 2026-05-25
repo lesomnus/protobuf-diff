@@ -2,6 +2,9 @@ edition = "2023";
 
 package diff;
 
+import "diff/segment.proto";
+import "diff/value.proto";
+
 option go_package = "github.com/lesomnus/protobuf-diff/dpb";
 
 message Delta {
@@ -11,46 +14,19 @@ message Delta {
 message Entry {
   // If no path nor targets are specified, the op applies to the root.
 
-  // Path is the field path to the target field, encoded as a sequence of tag and wire type pairs.
-  // For example, the path to a field with tag 1 and type length-delimited is encoded as the varint 10 (1 << 3 | 2).
-  // If no targets are specified, the last segment will be the target field; otherwise, the last segment will be the parent of the target field.
-  bytes path = 1;
+  Path path = 1;
 
-  // Index indicates the position of the source.
-  // The value is parsed as according to the source type:
-  //   message - varint encoded field number
-  //   repeated - varint encoded zigzag number
-  //   map - key type
+  repeated Segment targets = 2;
 
-  // List of target indices for the ops.
-  // String keys are length-prefixed and concatenated together.
-  bytes targets = 2;
-
-  // no_insert is ignored when patching on the repeated fields.
-  bool no_insert = 3;
-  bool no_update = 4;
-
-  // On repeated fields, the target index is updated by default; set no_update=true to insert instead.
-  // On repeated fields with no_update=true, index -1 indicates appending to the end of the list and the first backward index is -2, and so on.
+  //
   oneof kind {
-    // Deleted op does not affected by no_insert or no_update.
-    bool deleted = 5;
-    bytes assigned = 6;
-    // Target fields must be message type.
-    // Bytes are parsed as the target message type and proto.Merge'd into the target field.
-    bytes merged = 7;
-    bytes copied = 8; // Index
-    bytes scattered = 9; // Index
-    // Swapped op does not affected by no_insert or no_update.
-    bytes swapped = 10; // Index
+    bool remove = 3;
+    Value test = 4;
+    Value insert = 5;
+    Value assign = 6;
+    FieldSegment move = 7;
+    FieldSegment copy = 8;
 
-    Edit edited = 14;
-    Delta nested = 15;
-  }
-}
-
-message Edit {
-  oneof method {
-    bytes myers = 1;
+    Delta nest = 15;
   }
 }

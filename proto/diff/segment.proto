@@ -1,0 +1,49 @@
+edition = "2023";
+
+package diff;
+
+option go_package = "github.com/lesomnus/protobuf-diff/dpb";
+
+message Path {
+  repeated FieldSegment segments = 1;
+}
+
+message Segment {
+  oneof kind {
+    // Name of the field or key of the map entry.
+    string name = 1;
+    // Field number of the message field or index of the repeated field.
+    sint64 index = 2;
+
+    // FieldSegment can be used over name or index to select the field more precisely.
+    FieldSegment field = 13;
+    RangeSegment range = 12;
+  }
+}
+
+// FieldSegment represents a field segment in the path, which can be identified by either name or number.
+// One of name, name_alt, or number must be specified.
+// If multiple fields are specified, all of them must match for the segment to be considered a match; otherwise, the operations will fail.
+message FieldSegment {
+  // Name of the field or key of the map entry.
+  string name = 1;
+  // Alternative name of the field or key of the map entry.
+  // For instance, original proto field name is changed in ProtoJSON format.
+  string name_alt = 2;
+  // Field number of the message field.
+  sint64 number = 3;
+}
+
+// RangeSegment represents a range segment in the path, which can be identified by the start and end indices of the repeated field.
+// If the field is empty, the range is open to that side.
+//
+//	xxxxx [_, _) == [0, _) matches all elements.
+//	---xx [-2, _) matches last two elements.
+//	xx-xx [-2, 2) matches last two elements and first two elements.
+//	xx-xx [-2, -4) matches last two elements and up to the fourth last element.
+message RangeSegment {
+  // Start index of the range, inclusive.
+  sint64 begin = 1;
+  // End index of the range, exclusive.
+  sint64 end = 2;
+}

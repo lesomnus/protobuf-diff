@@ -6,48 +6,32 @@ import (
 	"reflect"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"google.golang.org/protobuf/encoding/protowire"
 )
 
-func decodeFieldNames(data []byte) ([]string, error) {
+func decodeStructTargets(targets []*dpb.Segment) []string {
 	var names []string
-	for len(data) > 0 {
-		s, n := protowire.ConsumeString(data)
-		if n < 0 {
-			return nil, fmt.Errorf("invalid string encoding: %w", protowire.ParseError(n))
+	for _, seg := range targets {
+		if seg.WhichKind() == dpb.Segment_Name_case {
+			names = append(names, seg.GetName())
 		}
-		names = append(names, s)
-		data = data[n:]
 	}
-	return names, nil
+	return names
 }
 
 func (o PatchOption) patchStruct(v reflect.Value, entry *dpb.Entry) error {
-	names, err := decodeFieldNames(entry.GetTargets())
-	if err != nil {
-		return fmt.Errorf("decode targets: %w", err)
-	}
+	names := decodeStructTargets(entry.GetTargets())
 	if len(names) == 0 {
+		if entry.WhichKind() == dpb.Entry_Nest_case {
+			return o.PatchField(v, entry.GetNest())
+		}
 		return nil
-	}
-
-	check := func(f reflect.Value) bool {
-		exists := f.Kind() != reflect.Pointer || !f.IsNil()
-		if !exists && entry.GetNoInsert() {
-			return false
-		}
-		if exists && entry.GetNoUpdate() {
-			return false
-		}
-		return true
 	}
 
 	op := func(name string) error { return nil }
 
 	switch entry.WhichKind() {
-	case dpb.Entry_Deleted_case:
-		if entry.GetDeleted() {
+	case dpb.Entry_Remove_case:
+		if entry.GetRemove() {
 			op = func(name string) error {
 				f := v.FieldByName(name)
 				if !f.IsValid() || !f.CanSet() {
@@ -58,16 +42,32 @@ func (o PatchOption) patchStruct(v reflect.Value, entry *dpb.Entry) error {
 			}
 		}
 
-	case dpb.Entry_Assigned_case:
+	case dpb.Entry_Test_case:
+		op = func(name string) error {
+			f := v.FieldByName(name)
+			if !f.IsValid() {
+				return nil
+			}
+			val, err := decodeValue(entry.GetTest(), f.Type())
+			if err != nil {
+				return fmt.Errorf("decode test value: %w", err)
+			}
+			if f.Interface() != val.Interface() {
+				return fmt.Errorf("test failed at field %q", name)
+			}
+			return nil
+		}
+
+	case dpb.Entry_Insert_case:
 		op = func(name string) error {
 			f := v.FieldByName(name)
 			if !f.IsValid() || !f.CanSet() {
 				return nil
 			}
-			if !check(f) {
+			if f.Kind() == reflect.Pointer && !f.IsNil() {
 				return nil
 			}
-			val, err := decodeValue(entry.GetAssigned(), f.Type())
+			val, err := decodeValue(entry.GetInsert(), f.Type())
 			if err != nil {
 				return fmt.Errorf("decode: %w", err)
 			}
@@ -75,66 +75,27 @@ func (o PatchOption) patchStruct(v reflect.Value, entry *dpb.Entry) error {
 			return nil
 		}
 
-	case dpb.Entry_Merged_case:
-		return fmt.Errorf("unimplemented: %q", entry.WhichKind())
-
-	case dpb.Entry_Copied_case:
-		src_name := ref.DecodeString(entry.GetCopied())
-		src := v.FieldByName(src_name)
-		if !src.IsValid() {
-			// Source not found: clear targets.
-			op = func(name string) error {
-				f := v.FieldByName(name)
-				if !f.IsValid() || !f.CanSet() {
-					return nil
-				}
-				if !check(f) {
-					return nil
-				}
-				f.Set(reflect.Zero(f.Type()))
+	case dpb.Entry_Assign_case:
+		op = func(name string) error {
+			f := v.FieldByName(name)
+			if !f.IsValid() || !f.CanSet() {
 				return nil
 			}
-		} else {
-			op = func(name string) error {
-				f := v.FieldByName(name)
-				if !f.IsValid() || !f.CanSet() {
-					return nil
-				}
-				if !check(f) {
-					return nil
-				}
-				// Dereference pointer source.
-				sv := src
-				for sv.Kind() == reflect.Pointer {
-					if sv.IsNil() {
-						f.Set(reflect.Zero(f.Type()))
-						return nil
-					}
-					sv = sv.Elem()
-				}
-				ft := f.Type()
-				for ft.Kind() == reflect.Pointer {
-					ft = ft.Elem()
-				}
-				w, err := cast(sv, ft)
-				if err != nil {
-					return err
-				}
-				setField(f, w)
-				return nil
+			val, err := decodeValue(entry.GetAssign(), f.Type())
+			if err != nil {
+				return fmt.Errorf("decode: %w", err)
 			}
+			setField(f, val)
+			return nil
 		}
 
-	case dpb.Entry_Scattered_case:
-		src_name := ref.DecodeString(entry.GetScattered())
+	case dpb.Entry_Move_case:
+		src_name := entry.GetMove().GetName()
 		src := v.FieldByName(src_name)
 		if !src.IsValid() {
 			op = func(name string) error {
 				f := v.FieldByName(name)
 				if !f.IsValid() || !f.CanSet() {
-					return nil
-				}
-				if !check(f) {
 					return nil
 				}
 				f.Set(reflect.Zero(f.Type()))
@@ -145,9 +106,6 @@ func (o PatchOption) patchStruct(v reflect.Value, entry *dpb.Entry) error {
 			op = func(name string) error {
 				f := v.FieldByName(name)
 				if !f.IsValid() || !f.CanSet() {
-					return nil
-				}
-				if !check(f) {
 					return nil
 				}
 				sv := src
@@ -175,75 +133,52 @@ func (o PatchOption) patchStruct(v reflect.Value, entry *dpb.Entry) error {
 			}
 		}
 
-	case dpb.Entry_Swapped_case:
-		dst_name := ref.DecodeString(entry.GetSwapped())
-
-		op = func(name string) error {
-			fa := v.FieldByName(name)
-			fb := v.FieldByName(dst_name)
-			if !fa.IsValid() || !fa.CanSet() || !fb.IsValid() || !fb.CanSet() {
+	case dpb.Entry_Copy_case:
+		src_name := entry.GetCopy().GetName()
+		src := v.FieldByName(src_name)
+		if !src.IsValid() {
+			op = func(name string) error {
+				f := v.FieldByName(name)
+				if !f.IsValid() || !f.CanSet() {
+					return nil
+				}
+				f.Set(reflect.Zero(f.Type()))
 				return nil
 			}
-
-			tat := fa.Type()
-			for tat.Kind() == reflect.Pointer {
-				tat = tat.Elem()
-			}
-
-			tbt := fb.Type()
-			for tbt.Kind() == reflect.Pointer {
-				tbt = tbt.Elem()
-			}
-
-			va := fa
-			for va.Kind() == reflect.Pointer {
-				if va.IsNil() {
-					break
+		} else {
+			op = func(name string) error {
+				f := v.FieldByName(name)
+				if !f.IsValid() || !f.CanSet() {
+					return nil
 				}
-				va = va.Elem()
-			}
-
-			vb := fb
-			for vb.Kind() == reflect.Pointer {
-				if vb.IsNil() {
-					break
+				sv := src
+				for sv.Kind() == reflect.Pointer {
+					if sv.IsNil() {
+						f.Set(reflect.Zero(f.Type()))
+						return nil
+					}
+					sv = sv.Elem()
 				}
-				vb = vb.Elem()
+				ft := f.Type()
+				for ft.Kind() == reflect.Pointer {
+					ft = ft.Elem()
+				}
+				w, err := cast(sv, ft)
+				if err != nil {
+					return err
+				}
+				setField(f, w)
+				return nil
 			}
-
-			// Snapshot values before modifying to avoid aliasing via reflect.Value.
-			snap_a := reflect.New(tat).Elem()
-			snap_a.Set(va)
-
-			snap_b := reflect.New(tbt).Elem()
-			snap_b.Set(vb)
-
-			wa, err := cast(snap_a, tbt)
-			if err != nil {
-				return fmt.Errorf("cast src: %w", err)
-			}
-
-			wb, err := cast(snap_b, tat)
-			if err != nil {
-				return fmt.Errorf("cast dst: %w", err)
-			}
-
-			setField(fa, wb)
-			setField(fb, wa)
-			return nil
 		}
 
-	case dpb.Entry_Nested_case:
-		delta := entry.GetNested()
+	case dpb.Entry_Nest_case:
+		delta := entry.GetNest()
 		op = func(name string) error {
 			f := v.FieldByName(name)
 			if !f.IsValid() || !f.CanSet() {
 				return nil
 			}
-			if !check(f) {
-				return nil
-			}
-
 			fv := f
 			for fv.Kind() == reflect.Pointer {
 				if fv.IsNil() {
@@ -251,7 +186,6 @@ func (o PatchOption) patchStruct(v reflect.Value, entry *dpb.Entry) error {
 				}
 				fv = fv.Elem()
 			}
-
 			switch fv.Kind() {
 			case reflect.Struct, reflect.Slice, reflect.Map:
 				return o.PatchField(fv, delta)

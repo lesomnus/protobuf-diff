@@ -2,12 +2,12 @@ package patchproto
 
 import (
 	"fmt"
-	"strconv"
 
+	"github.com/lesomnus/protobuf-diff/dpb"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func Navigate(c any, fd protoreflect.FieldDescriptor, segments []any) (any, protoreflect.FieldDescriptor, error) {
+func Navigate(c any, fd protoreflect.FieldDescriptor, segments []*dpb.FieldSegment) (any, protoreflect.FieldDescriptor, error) {
 	if len(segments) == 0 {
 		return c, fd, nil
 	}
@@ -38,43 +38,29 @@ func Navigate(c any, fd protoreflect.FieldDescriptor, segments []any) (any, prot
 	}
 }
 
-func NavigateMessage(c protoreflect.Message, fd protoreflect.FieldDescriptor, segments []any) (any, protoreflect.FieldDescriptor, error) {
+func NavigateMessage(c protoreflect.Message, fd protoreflect.FieldDescriptor, segments []*dpb.FieldSegment) (any, protoreflect.FieldDescriptor, error) {
 	if len(segments) == 0 {
 		return c, fd, nil
 	}
 
-	s := segments[0]
+	fs := segments[0]
 	fields := c.Descriptor().Fields()
 
 	var fd_ protoreflect.FieldDescriptor
-	switch s := s.(type) {
-	case string:
-		fd_ = fields.ByName(protoreflect.Name(s))
+	if fs.HasName() && fs.GetName() != "" {
+		fd_ = fields.ByName(protoreflect.Name(fs.GetName()))
 		if fd_ == nil {
-			return nil, nil, fmt.Errorf("field not found: %q", s)
+			return nil, nil, fmt.Errorf("field not found: %q", fs.GetName())
 		}
-	case int:
-		if s <= 0 {
-			return nil, nil, fmt.Errorf("invalid field number: %d", s)
+	} else {
+		n := fs.GetNumber()
+		if n <= 0 {
+			return nil, nil, fmt.Errorf("invalid field number: %d", n)
 		}
-
-		fd_ = fields.ByNumber(protoreflect.FieldNumber(s))
+		fd_ = fields.ByNumber(protoreflect.FieldNumber(n))
 		if fd_ == nil {
-			return nil, nil, fmt.Errorf("field not found: %d", s)
+			return nil, nil, fmt.Errorf("field not found: %d", n)
 		}
-
-	case uint:
-		if s == 0 {
-			return nil, nil, fmt.Errorf("invalid field number: %d", s)
-		}
-
-		fd_ = fields.ByNumber(protoreflect.FieldNumber(s))
-		if fd_ == nil {
-			return nil, nil, fmt.Errorf("field not found: %d", s)
-		}
-
-	default:
-		return nil, nil, fmt.Errorf("invalid path segment type: %T", s)
 	}
 
 	v := c.Get(fd_)
@@ -90,37 +76,25 @@ func NavigateMessage(c protoreflect.Message, fd protoreflect.FieldDescriptor, se
 	}
 }
 
-func NavigateList(c protoreflect.List, fd protoreflect.FieldDescriptor, segments []any) (any, protoreflect.FieldDescriptor, error) {
+func NavigateList(c protoreflect.List, fd protoreflect.FieldDescriptor, segments []*dpb.FieldSegment) (any, protoreflect.FieldDescriptor, error) {
 	if len(segments) == 0 {
 		return c, fd, nil
 	}
 
-	s := segments[0]
+	fs := segments[0]
+	if fs.HasName() && fs.GetName() != "" {
+		return nil, nil, fmt.Errorf("expected numeric index for list, got name %q", fs.GetName())
+	}
 	l := c.Len()
-
-	var v protoreflect.Value
-	switch s := s.(type) {
-	case int:
-		if s < 0 {
-			s += l
-		}
-		if s > l || s < 0 {
-			return nil, nil, fmt.Errorf("list index out of bounds: %d", s)
-		}
-
-		v = c.Get(s)
-
-	case uint:
-		if s > uint(l) {
-			return nil, nil, fmt.Errorf("list index out of bounds: %d", s)
-		}
-
-		v = c.Get(int(s))
-
-	default:
-		return nil, nil, fmt.Errorf("invalid path segment type for list: %T", s)
+	i := int(fs.GetNumber())
+	if i < 0 {
+		i += l
+	}
+	if i < 0 || i >= l {
+		return nil, nil, fmt.Errorf("list index out of bounds: %d", fs.GetNumber())
 	}
 
+	v := c.Get(i)
 	switch fd.Kind() {
 	case protoreflect.MessageKind:
 		return NavigateMessage(v.Message(), fd, segments[1:])
@@ -129,86 +103,26 @@ func NavigateList(c protoreflect.List, fd protoreflect.FieldDescriptor, segments
 	}
 }
 
-func NavigateMap(c protoreflect.Map, fd protoreflect.FieldDescriptor, segments []any) (any, protoreflect.FieldDescriptor, error) {
+func NavigateMap(c protoreflect.Map, fd protoreflect.FieldDescriptor, segments []*dpb.FieldSegment) (any, protoreflect.FieldDescriptor, error) {
 	if len(segments) == 0 {
 		return c, fd, nil
 	}
 
-	s := segments[0]
+	fs := segments[0]
 
 	var w protoreflect.Value
 	switch fd.MapKey().Kind() {
 	case protoreflect.StringKind:
-		var k string
-		switch s := s.(type) {
-		case string:
-			k = s
-		case int:
-			k = strconv.FormatInt(int64(s), 10)
-		case uint:
-			k = strconv.FormatUint(uint64(s), 10)
-		}
-		w = protoreflect.ValueOfString(k)
+		w = protoreflect.ValueOfString(fs.GetName())
 
 	case protoreflect.Int32Kind, protoreflect.Int64Kind,
 		protoreflect.Sint32Kind, protoreflect.Sint64Kind,
 		protoreflect.Sfixed32Kind, protoreflect.Sfixed64Kind:
-
-		var k int
-		switch s := s.(type) {
-		case string:
-			if len(s) == 0 {
-				return nil, nil, fmt.Errorf("invalid int map key: empty string")
-			}
-			if s[0] == '-' {
-				v, err := strconv.ParseInt(s, 10, 64)
-				if err != nil {
-					return nil, nil, fmt.Errorf("invalid int map key: %q", s)
-				}
-				k = int(v)
-			} else {
-				v, err := strconv.ParseUint(s, 10, 64)
-				if err != nil {
-					return nil, nil, fmt.Errorf("invalid int map key: %q", s)
-				}
-				k = int(v)
-			}
-		case int:
-			k = s
-		case uint:
-			k = int(s)
-
-		default:
-			return nil, nil, fmt.Errorf("invalid path segment type for int map key: %T", s)
-		}
-		w = protoreflect.ValueOfInt64(int64(k))
+		w = protoreflect.ValueOfInt64(fs.GetNumber())
 
 	case protoreflect.Uint32Kind, protoreflect.Uint64Kind,
 		protoreflect.Fixed32Kind, protoreflect.Fixed64Kind:
-
-		var k uint
-		switch s := s.(type) {
-		case string:
-			if len(s) == 0 {
-				return nil, nil, fmt.Errorf("invalid uint map key: empty string")
-			}
-			v, err := strconv.ParseUint(s, 10, 64)
-			if err != nil {
-				return nil, nil, fmt.Errorf("invalid uint map key: %q", s)
-			}
-			k = uint(v)
-		case int:
-			if s < 0 {
-				return nil, nil, fmt.Errorf("invalid uint map key: negative int %d", s)
-			}
-			k = uint(s)
-		case uint:
-			k = s
-
-		default:
-			return nil, nil, fmt.Errorf("invalid path segment type for uint map key: %T", s)
-		}
-		w = protoreflect.ValueOfUint64(uint64(k))
+		w = protoreflect.ValueOfUint64(uint64(fs.GetNumber()))
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported map key type: %s", fd.MapKey().Kind())

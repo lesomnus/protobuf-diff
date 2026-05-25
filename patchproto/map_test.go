@@ -7,9 +7,14 @@ import (
 	"github.com/lesomnus/protobuf-diff/internal/sample"
 	"github.com/lesomnus/protobuf-diff/internal/x"
 	"github.com/lesomnus/protobuf-diff/patchproto"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"github.com/lesomnus/protobuf-diff/target"
 )
+
+func mapEntry(inner *dpb.Entry) *dpb.Entry {
+	outer := &dpb.Entry{}
+	outer.SetTargets([]*dpb.Segment{dpb.SegField(dpb.FieldNum(10909))}) // m_s_s
+	outer.SetNest(dpb.NewDelta(inner))
+	return outer
+}
 
 func TestPatchMap(t *testing.T) {
 	a := &sample.Value{}
@@ -18,17 +23,12 @@ func TestPatchMap(t *testing.T) {
 		"B": "b",
 		"C": "c",
 	})
-
-	t.Run("deleted", func(t *testing.T) {
+	t.Run("remove existing keys", func(t *testing.T) {
 		d := &dpb.Entry{}
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.SetDeleted(true)
+		d.SetTargets([]*dpb.Segment{dpb.SegName("B"), dpb.SegName("D")}) // D does not exist
+		d.SetRemove(true)
 
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
+		b, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
 		x.NoError(t, err)
 
 		v := &sample.Value{}
@@ -38,16 +38,50 @@ func TestPatchMap(t *testing.T) {
 		})
 		x.PbEq(t, v, b)
 	})
-	t.Run("assigned", func(t *testing.T) {
+	t.Run("test pass", func(t *testing.T) {
 		d := &dpb.Entry{}
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.SetAssigned(dpb.String("z"))
+		d.SetTargets([]*dpb.Segment{dpb.SegName("A")})
+		d.SetTest(dpb.ValS("a"))
 
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
+		_, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
+		x.NoError(t, err)
+	})
+	t.Run("test fail", func(t *testing.T) {
+		d := &dpb.Entry{}
+		d.SetTargets([]*dpb.Segment{dpb.SegName("A")})
+		d.SetTest(dpb.ValS("wrong"))
 
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
+		_, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
+		x.Error(t, err)
+	})
+	t.Run("insert absent key", func(t *testing.T) {
+		d := &dpb.Entry{}
+		d.SetTargets([]*dpb.Segment{dpb.SegName("D")}) // D does not exist
+		d.SetInsert(dpb.ValS("d"))
+
+		b, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
+		x.NoError(t, err)
+
+		v := &sample.Value{}
+		v.SetMSS(map[string]string{"A": "a", "B": "b", "C": "c", "D": "d"})
+		x.PbEq(t, v, b)
+	})
+	t.Run("insert present key is no-op", func(t *testing.T) {
+		d := &dpb.Entry{}
+		d.SetTargets([]*dpb.Segment{dpb.SegName("A")}) // A already exists
+		d.SetInsert(dpb.ValS("new"))
+
+		b, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
+		x.NoError(t, err)
+
+		x.PbEq(t, a, b)
+	})
+	t.Run("assign creates and updates", func(t *testing.T) {
+		d := &dpb.Entry{}
+		d.SetTargets([]*dpb.Segment{dpb.SegName("B"), dpb.SegName("D")})
+		d.SetAssign(dpb.ValS("z"))
+
+		b, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
 		x.NoError(t, err)
 
 		v := &sample.Value{}
@@ -55,238 +89,70 @@ func TestPatchMap(t *testing.T) {
 			"A": "a",
 			"B": "z",
 			"C": "c",
-			"D": "z",
+			"D": "z", // D is created
 		})
 		x.PbEq(t, v, b)
 	})
-	t.Run("assigned with no insert", func(t *testing.T) {
+	t.Run("move renames key", func(t *testing.T) {
 		d := &dpb.Entry{}
-		d.SetNoInsert(true)
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.SetAssigned(dpb.String("z"))
+		d.SetTargets([]*dpb.Segment{dpb.SegName("Z")}) // destination
+		d.SetMove(dpb.Field("A"))                      // source
 
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
+		b, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
 		x.NoError(t, err)
 
 		v := &sample.Value{}
 		v.SetMSS(map[string]string{
-			"A": "a",
-			"B": "z",
-			"C": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("assigned with no update", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.SetNoUpdate(true)
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.SetAssigned(dpb.String("z"))
-
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
-		x.NoError(t, err)
-
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "a",
 			"B": "b",
 			"C": "c",
-			"D": "z",
+			"Z": "a",
 		})
 		x.PbEq(t, v, b)
 	})
-	t.Run("copied", func(t *testing.T) {
+	t.Run("copy duplicates value", func(t *testing.T) {
 		d := &dpb.Entry{}
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.CopiedFrom(ref.StringKey("C"))
+		d.SetTargets([]*dpb.Segment{dpb.SegName("Z")}) // destination
+		d.SetCopy(dpb.Field("A"))                      // source
 
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
+		b, err := patchproto.Patched(a, dpb.NewDelta(mapEntry(d)))
 		x.NoError(t, err)
 
 		v := &sample.Value{}
 		v.SetMSS(map[string]string{
-			"A": "a",
-			"B": "c",
-			"C": "c",
-			"D": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("copied with no insert", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.SetNoInsert(true)
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.CopiedFrom(ref.StringKey("C"))
-
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
-		x.NoError(t, err)
-
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "a",
-			"B": "c",
-			"C": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("copied with no update", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.SetNoUpdate(true)
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.CopiedFrom(ref.StringKey("C"))
-
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
-		x.NoError(t, err)
-
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "a",
+			"A": "a", // source kept
 			"B": "b",
 			"C": "c",
-			"D": "c",
+			"Z": "a",
 		})
 		x.PbEq(t, v, b)
 	})
-	t.Run("scattered", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.ScatteredFrom(ref.StringKey("C"))
+	t.Run("nest into message value", func(t *testing.T) {
+		inner := &sample.Value{}
+		inner.SetS_1("hello")
 
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
+		aa := &sample.Value{}
+		aa.SetMSM(map[string]*sample.Value{"key": inner})
 
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
+		field_d := &dpb.Entry{}
+		field_d.SetTargets([]*dpb.Segment{dpb.SegField(dpb.FieldNum(209))}) // s_2
+		field_d.SetAssign(dpb.ValS("world"))
+
+		map_d := &dpb.Entry{}
+		map_d.SetTargets([]*dpb.Segment{dpb.SegName("key")})
+		map_d.SetNest(dpb.NewDelta(field_d))
+
+		outer := &dpb.Entry{}
+		outer.SetTargets([]*dpb.Segment{dpb.SegField(dpb.FieldNum(10911))}) // m_s_m
+		outer.SetNest(dpb.NewDelta(map_d))
+
+		b, err := patchproto.Patched(aa, dpb.NewDelta(outer))
 		x.NoError(t, err)
 
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "a",
-			"B": "c",
-			"D": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("scattered with no insert", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.SetNoInsert(true)
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.ScatteredFrom(ref.StringKey("C"))
-
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
-		x.NoError(t, err)
-
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "a",
-			"B": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("scattered with no update", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.SetNoUpdate(true)
-		d.AppendTargets(target.StringKeys("B", "D"))
-		d.ScatteredFrom(ref.StringKey("C"))
-
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
-		x.NoError(t, err)
-
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "a",
-			"B": "b",
-			"D": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("swapped", func(t *testing.T) {
-		d := &dpb.Entry{}
-		d.AppendTargets(target.StringKeys("B"))
-		d.SwappedWith(ref.StringKey("A"))
-
-		d_ := &dpb.Entry{}
-		d_.AppendTargets(target.Fields(10909))
-		d_.SetNested(dpb.NewDelta(d))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_))
-		x.NoError(t, err)
-
-		v := &sample.Value{}
-		v.SetMSS(map[string]string{
-			"A": "b",
-			"B": "a",
-			"C": "c",
-		})
-		x.PbEq(t, v, b)
-	})
-	t.Run("nested", func(t *testing.T) {
-		ma := &sample.Value{}
-		ma.SetS_1("foo")
-		mb := &sample.Value{}
-		mb.SetS_1("bar")
-
-		a := &sample.Value{}
-		a.SetMSM(map[string]*sample.Value{
-			"A": ma,
-			"B": mb,
-		})
-
-		d := &dpb.Entry{}
-		d.AppendTargets(target.Fields(209))
-		d.SetAssigned(dpb.String("baz"))
-
-		d_inner := &dpb.Entry{}
-		d_inner.AppendTargets(target.StringKeys("B", "D"))
-		d_inner.SetNested(dpb.NewDelta(d))
-
-		d_outer := &dpb.Entry{}
-		d_outer.AppendTargets(target.Fields(10911))
-		d_outer.SetNested(dpb.NewDelta(d_inner))
-
-		b, err := patchproto.Patched(a, dpb.NewDelta(d_outer))
-		x.NoError(t, err)
-
-		wa := &sample.Value{}
-		wa.SetS_1("foo")
-		wb := &sample.Value{}
-		wb.SetS_1("bar")
-		wb.SetS_2("baz")
-		wd := &sample.Value{}
-		wd.SetS_2("baz")
-
-		v := &sample.Value{}
-		v.SetMSM(map[string]*sample.Value{
-			"A": wa,
-			"B": wb,
-		})
-		x.PbEq(t, v, b)
+		want_inner := &sample.Value{}
+		want_inner.SetS_1("hello")
+		want_inner.SetS_2("world")
+		want := &sample.Value{}
+		want.SetMSM(map[string]*sample.Value{"key": want_inner})
+		x.PbEq(t, want, b)
 	})
 }

@@ -6,23 +6,18 @@ import (
 	"strconv"
 
 	"github.com/lesomnus/protobuf-diff/jsonpatch"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"github.com/lesomnus/protobuf-diff/target"
 )
 
 // FromJsonPatch converts a JSON Patch document (RFC 6902) into a Delta.
 //
-// Path segments that are valid integers are encoded as signed integers in the Delta path so patchproto can use them as list indices.
-// The special "-" token is encoded as -1 (append).
-// String segments are kept as strings.
+// Path segments that are valid integers are treated as list indices.
+// The special "-" token is treated as -1 (append).
+// String segments are treated as field names or map keys.
 //
-// Value encoding for add/replace: strings are stored as raw bytes, booleans as varint, integers as varint, floats as fixed64.
-// Objects and arrays are not supported and will return an error.
-//
-// copy and move ops are only supported within the same container (identical parent paths).
-// Cross-container operations return an error.
-//
-// test ops are silently ignored since they have no mutating equivalent.
+// add on a list index → insert; add on a string key → assign (create-or-replace).
+// replace always maps to assign (creates if absent).
+// copy and move are only supported within the same container (identical parent paths).
+// test ops are silently ignored.
 func FromJsonPatch(doc jsonpatch.Doc) (*Delta, error) {
 	var entries []*Entry
 	for i, op := range doc {
@@ -56,127 +51,147 @@ func fromJsonPatchOp(op jsonpatch.Op) ([]*Entry, error) {
 
 func fromJsonPatchAdd(op jsonpatch.Op) ([]*Entry, error) {
 	segs := parseJsonPointer(op.Path)
-	value, err := jsonToBytes(op.Value)
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("path must not be root")
+	}
+	val, err := jsonToValue(op.Value)
 	if err != nil {
 		return nil, fmt.Errorf("encode value: %w", err)
 	}
 
+	parent := segs[:len(segs)-1]
+	last := segs[len(segs)-1]
+
 	e := &Entry{}
-	e.SetPath(buildDeltaPath(segs).Value())
-	e.SetAssigned(value)
-	if len(segs) > 0 {
-		if _, ok := segs[len(segs)-1].(int); ok {
-			e.SetNoUpdate(true)
-		}
+	e.SetPath(buildJsonPath(parent))
+	e.SetTargets([]*Segment{jsonSegFromAny(last)})
+	if _, ok := last.(int); ok {
+		e.SetInsert(val) // list: insert-before
+	} else {
+		e.SetAssign(val) // message/map: create-or-replace
 	}
 	return []*Entry{e}, nil
 }
 
 func fromJsonPatchRemove(op jsonpatch.Op) ([]*Entry, error) {
 	segs := parseJsonPointer(op.Path)
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("path must not be root")
+	}
+
+	parent := segs[:len(segs)-1]
+	last := segs[len(segs)-1]
+
 	e := &Entry{}
-	e.SetPath(buildDeltaPath(segs).Value())
-	e.SetDeleted(true)
+	e.SetPath(buildJsonPath(parent))
+	e.SetTargets([]*Segment{jsonSegFromAny(last)})
+	e.SetRemove(true)
 	return []*Entry{e}, nil
 }
 
 func fromJsonPatchReplace(op jsonpatch.Op) ([]*Entry, error) {
 	segs := parseJsonPointer(op.Path)
-	value, err := jsonToBytes(op.Value)
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("path must not be root")
+	}
+	val, err := jsonToValue(op.Value)
 	if err != nil {
 		return nil, fmt.Errorf("encode value: %w", err)
 	}
 
+	parent := segs[:len(segs)-1]
+	last := segs[len(segs)-1]
+
 	e := &Entry{}
-	e.SetPath(buildDeltaPath(segs).Value())
-	e.SetAssigned(value)
-	e.SetNoInsert(true)
+	e.SetPath(buildJsonPath(parent))
+	e.SetTargets([]*Segment{jsonSegFromAny(last)})
+	e.SetAssign(val)
 	return []*Entry{e}, nil
 }
 
 func fromJsonPatchMove(op jsonpatch.Op) ([]*Entry, error) {
 	fromSegs := parseJsonPointer(op.From)
 	pathSegs := parseJsonPointer(op.Path)
-	parentPath, fromSeg, pathSeg, err := samePContainerSegs(fromSegs, pathSegs)
+	parent, fromSeg, pathSeg, err := sameContainerSegs(fromSegs, pathSegs)
 	if err != nil {
 		return nil, err
 	}
 
-	e := &Entry{}
-	e.SetPath(parentPath.Value())
-	// For list context: JSON Patch move path index is in the post-removal array,
-	// but Delta Scattered operates on the original array. Adjust when from < path.
+	// JSON Patch move: path index is in the post-removal array.
+	// Delta move operates on the original array, so adjust when moving forward.
 	if fromIdx, ok := fromSeg.(int); ok {
 		if pathIdx, ok := pathSeg.(int); ok {
-			e.SetNoUpdate(true)
 			if fromIdx >= 0 && pathIdx >= 0 && fromIdx < pathIdx {
 				pathSeg = pathIdx + 1
 			}
 		}
 	}
-	appendJsonTarget(e, pathSeg)
-	e.ScatteredFrom(makeJsonRef(fromSeg))
+
+	e := &Entry{}
+	e.SetPath(buildJsonPath(parent))
+	e.SetTargets([]*Segment{jsonSegFromAny(pathSeg)})
+	e.SetMove(jsonFieldSegFromAny(fromSeg))
 	return []*Entry{e}, nil
 }
 
 func fromJsonPatchCopy(op jsonpatch.Op) ([]*Entry, error) {
 	fromSegs := parseJsonPointer(op.From)
 	pathSegs := parseJsonPointer(op.Path)
-	parentPath, fromSeg, pathSeg, err := samePContainerSegs(fromSegs, pathSegs)
+	parent, fromSeg, pathSeg, err := sameContainerSegs(fromSegs, pathSegs)
 	if err != nil {
 		return nil, err
 	}
 
 	e := &Entry{}
-	e.SetPath(parentPath.Value())
-	// For list context: set insert mode so the copied value is inserted, not replaced.
-	if _, ok := fromSeg.(int); ok {
-		if _, ok := pathSeg.(int); ok {
-			e.SetNoUpdate(true)
-		}
-	}
-	appendJsonTarget(e, pathSeg)
-	e.CopiedFrom(makeJsonRef(fromSeg))
+	e.SetPath(buildJsonPath(parent))
+	e.SetTargets([]*Segment{jsonSegFromAny(pathSeg)})
+	e.SetCopy(jsonFieldSegFromAny(fromSeg))
 	return []*Entry{e}, nil
 }
 
-// samePContainerSegs checks that from and path share the same parent and returns
-// the parent path, the from last segment, and the path last segment.
-func samePContainerSegs(fromSegs, pathSegs []any) (Path, any, any, error) {
+func sameContainerSegs(fromSegs, pathSegs []any) ([]any, any, any, error) {
 	if len(fromSegs) == 0 || len(pathSegs) == 0 {
-		return P, nil, nil, fmt.Errorf("path must not be root")
+		return nil, nil, nil, fmt.Errorf("path must not be root")
 	}
 	fromParent := fromSegs[:len(fromSegs)-1]
 	pathParent := pathSegs[:len(pathSegs)-1]
 	if len(fromParent) != len(pathParent) {
-		return P, nil, nil, fmt.Errorf("cross-container operations are not supported")
+		return nil, nil, nil, fmt.Errorf("cross-container operations are not supported")
 	}
 	for i := range fromParent {
 		if fromParent[i] != pathParent[i] {
-			return P, nil, nil, fmt.Errorf("cross-container operations are not supported")
+			return nil, nil, nil, fmt.Errorf("cross-container operations are not supported")
 		}
 	}
-	return buildDeltaPath(fromParent), fromSegs[len(fromSegs)-1], pathSegs[len(pathSegs)-1], nil
+	return fromParent, fromSegs[len(fromSegs)-1], pathSegs[len(pathSegs)-1], nil
 }
 
-func appendJsonTarget(e *Entry, seg any) {
-	switch s := seg.(type) {
-	case int:
-		e.AppendTargets(target.Indices(s))
-	case string:
-		e.AppendTargets(target.StringKeys(s))
+func buildJsonPath(segs []any) *Path {
+	fsegs := make([]*FieldSegment, len(segs))
+	for i, seg := range segs {
+		fsegs[i] = jsonFieldSegFromAny(seg)
 	}
+	return PathOf(fsegs...)
 }
 
-func makeJsonRef(seg any) ref.Ref {
+func jsonSegFromAny(seg any) *Segment {
 	switch s := seg.(type) {
 	case int:
-		return ref.Index(s)
+		return SegIndex(int64(s))
 	case string:
-		return ref.StringKey(s)
-	default:
-		return ref.Ref{}
+		return SegName(s)
 	}
+	return nil
+}
+
+func jsonFieldSegFromAny(seg any) *FieldSegment {
+	switch s := seg.(type) {
+	case int:
+		return FieldNum(int64(s))
+	case string:
+		return Field(s)
+	}
+	return nil
 }
 
 // parseJsonPointer splits a JSON Pointer into typed segments.
@@ -195,25 +210,9 @@ func parseJsonPointer(path string) []any {
 	return segs
 }
 
-func buildDeltaPath(segs []any) Path {
-	p := P
-	for _, seg := range segs {
-		switch s := seg.(type) {
-		case int:
-			p = p.I(s)
-		case string:
-			p = p.S(s)
-		}
-	}
-	return p
-}
-
-// jsonToBytes converts a JSON scalar value to Delta-encoded bytes.
-// Strings are stored as raw UTF-8. Booleans and integers use varint encoding.
-// Floating-point numbers use fixed64 encoding. Null produces nil.
-func jsonToBytes(v json.RawMessage) ([]byte, error) {
+func jsonToValue(v json.RawMessage) (*Value, error) {
 	if len(v) == 0 {
-		return nil, nil
+		return ValNull(), nil
 	}
 	switch v[0] {
 	case '"':
@@ -221,23 +220,23 @@ func jsonToBytes(v json.RawMessage) ([]byte, error) {
 		if err := json.Unmarshal(v, &s); err != nil {
 			return nil, err
 		}
-		return String(s), nil
+		return ValS(s), nil
 	case 't', 'f':
 		var b bool
 		if err := json.Unmarshal(v, &b); err != nil {
 			return nil, err
 		}
-		return Bool(b), nil
+		return ValB(b), nil
 	case 'n':
-		return nil, nil
+		return ValNull(), nil
 	default:
 		var i int64
 		if err := json.Unmarshal(v, &i); err == nil {
-			return Int(i), nil
+			return ValI(i), nil
 		}
 		var f float64
 		if err := json.Unmarshal(v, &f); err == nil {
-			return Double(f), nil
+			return ValF(f), nil
 		}
 		return nil, fmt.Errorf("unsupported JSON value: %s", v)
 	}

@@ -1,6 +1,6 @@
 version: v2
 inputs:
-  - directory: .
+  - directory: ./proto
 plugins:
   - local: [go, tool, google.golang.org/protobuf/cmd/protoc-gen-go]
     out: .

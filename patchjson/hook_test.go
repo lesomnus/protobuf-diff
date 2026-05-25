@@ -6,8 +6,6 @@ import (
 	"github.com/lesomnus/protobuf-diff/dpb"
 	"github.com/lesomnus/protobuf-diff/internal/x"
 	"github.com/lesomnus/protobuf-diff/patchjson"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"github.com/lesomnus/protobuf-diff/target"
 )
 
 func collectJsonHook() (patchjson.Option, *[][]dpb.PathEntry) {
@@ -29,12 +27,12 @@ func jIndex(i int) dpb.PathEntry {
 }
 
 func TestHookJsonMap(t *testing.T) {
-	t.Run("assigned notifies modified key", func(t *testing.T) {
+	t.Run("assign notifies modified key", func(t *testing.T) {
 		m := map[string]any{"a": "old"}
 
 		e := &dpb.Entry{}
-		e.AppendTargets(target.StringKeys("a"))
-		e.SetAssigned(patchjson.Value("new"))
+		e.SetTargets([]*dpb.Segment{dpb.SegName("a")})
+		e.SetAssign(dpb.ValS("new"))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(e), hook))
@@ -43,12 +41,12 @@ func TestHookJsonMap(t *testing.T) {
 			{jField("a")},
 		}, *paths)
 	})
-	t.Run("assigned notifies each target key", func(t *testing.T) {
+	t.Run("assign notifies each target key", func(t *testing.T) {
 		m := map[string]any{"a": "1", "b": "2"}
 
 		e := &dpb.Entry{}
-		e.AppendTargets(target.StringKeys("a", "b"))
-		e.SetAssigned(patchjson.Value("new"))
+		e.SetTargets([]*dpb.Segment{dpb.SegName("a"), dpb.SegName("b")})
+		e.SetAssign(dpb.ValS("new"))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(e), hook))
@@ -58,12 +56,12 @@ func TestHookJsonMap(t *testing.T) {
 			{jField("b")},
 		}, *paths)
 	})
-	t.Run("deleted notifies removed key", func(t *testing.T) {
+	t.Run("remove notifies removed key", func(t *testing.T) {
 		m := map[string]any{"a": "1", "b": "2"}
 
 		e := &dpb.Entry{}
-		e.AppendTargets(target.StringKeys("a"))
-		e.SetDeleted(true)
+		e.SetTargets([]*dpb.Segment{dpb.SegName("a")})
+		e.SetRemove(true)
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(e), hook))
@@ -72,12 +70,12 @@ func TestHookJsonMap(t *testing.T) {
 			{jField("a")},
 		}, *paths)
 	})
-	t.Run("scattered notifies targets and source", func(t *testing.T) {
+	t.Run("move notifies target and source", func(t *testing.T) {
 		m := map[string]any{"src": "val", "dst": "old"}
 
 		e := &dpb.Entry{}
-		e.AppendTargets(target.StringKeys("dst"))
-		e.ScatteredFrom(ref.StringKey("src"))
+		e.SetTargets([]*dpb.Segment{dpb.SegName("dst")})
+		e.SetMove(dpb.Field("src"))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(e), hook))
@@ -87,18 +85,18 @@ func TestHookJsonMap(t *testing.T) {
 			{jField("src")},
 		}, *paths)
 	})
-	t.Run("nested notifies with full path", func(t *testing.T) {
+	t.Run("nest notifies with full path", func(t *testing.T) {
 		m := map[string]any{
 			"outer": map[string]any{"inner": "old"},
 		}
 
 		inner := &dpb.Entry{}
-		inner.AppendTargets(target.StringKeys("inner"))
-		inner.SetAssigned(patchjson.Value("new"))
+		inner.SetTargets([]*dpb.Segment{dpb.SegName("inner")})
+		inner.SetAssign(dpb.ValS("new"))
 
 		outer := &dpb.Entry{}
-		outer.AppendTargets(target.StringKeys("outer"))
-		outer.SetNested(dpb.NewDelta(inner))
+		outer.SetTargets([]*dpb.Segment{dpb.SegName("outer")})
+		outer.SetNest(dpb.NewDelta(inner))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(outer), hook))
@@ -113,8 +111,9 @@ func TestHookJsonMap(t *testing.T) {
 		}
 
 		e := &dpb.Entry{}
-		e.SetPath(dpb.P.S("outer", "inner").Value())
-		e.SetAssigned(patchjson.Value("new"))
+		e.SetPath(dpb.PathOf(dpb.Field("outer")))
+		e.SetTargets([]*dpb.Segment{dpb.SegName("inner")})
+		e.SetAssign(dpb.ValS("new"))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(e), hook))
@@ -127,8 +126,8 @@ func TestHookJsonMap(t *testing.T) {
 		m := map[string]any{"a": "old"}
 
 		e := &dpb.Entry{}
-		e.AppendTargets(target.StringKeys("a"))
-		e.SetAssigned(patchjson.Value("new"))
+		e.SetTargets([]*dpb.Segment{dpb.SegName("a")})
+		e.SetAssign(dpb.ValS("new"))
 
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(e)))
 	})
@@ -137,17 +136,17 @@ func TestHookJsonMap(t *testing.T) {
 func TestHookJsonList(t *testing.T) {
 	makeEntry := func(inner *dpb.Entry) *dpb.Entry {
 		outer := &dpb.Entry{}
-		outer.AppendTargets(target.StringKeys("list"))
-		outer.SetNested(dpb.NewDelta(inner))
+		outer.SetTargets([]*dpb.Segment{dpb.SegName("list")})
+		outer.SetNest(dpb.NewDelta(inner))
 		return outer
 	}
 
-	t.Run("deleted notifies each removed index", func(t *testing.T) {
+	t.Run("remove notifies each removed index", func(t *testing.T) {
 		m := map[string]any{"list": []any{"a", "b", "c"}}
 
 		inner := &dpb.Entry{}
-		inner.AppendTargets(target.Indices(0, 2))
-		inner.SetDeleted(true)
+		inner.SetTargets([]*dpb.Segment{dpb.SegIndex(0), dpb.SegIndex(2)})
+		inner.SetRemove(true)
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(makeEntry(inner)), hook))
@@ -157,12 +156,12 @@ func TestHookJsonList(t *testing.T) {
 			{jField("list"), jIndex(2)},
 		}, *paths)
 	})
-	t.Run("assigned update notifies each modified index", func(t *testing.T) {
+	t.Run("assign notifies each modified index", func(t *testing.T) {
 		m := map[string]any{"list": []any{"a", "b", "c"}}
 
 		inner := &dpb.Entry{}
-		inner.AppendTargets(target.Indices(0, 2))
-		inner.SetAssigned(patchjson.Value("z"))
+		inner.SetTargets([]*dpb.Segment{dpb.SegIndex(0), dpb.SegIndex(2)})
+		inner.SetAssign(dpb.ValS("z"))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(makeEntry(inner)), hook))
@@ -172,13 +171,12 @@ func TestHookJsonList(t *testing.T) {
 			{jField("list"), jIndex(2)},
 		}, *paths)
 	})
-	t.Run("assigned insert notifies each insertion index", func(t *testing.T) {
+	t.Run("insert notifies each insertion index", func(t *testing.T) {
 		m := map[string]any{"list": []any{"a", "b"}}
 
 		inner := &dpb.Entry{}
-		inner.SetNoUpdate(true)
-		inner.AppendTargets(target.Indices(1))
-		inner.SetAssigned(patchjson.Value("z"))
+		inner.SetTargets([]*dpb.Segment{dpb.SegIndex(1)})
+		inner.SetInsert(dpb.ValS("z"))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(makeEntry(inner)), hook))
@@ -187,12 +185,12 @@ func TestHookJsonList(t *testing.T) {
 			{jField("list"), jIndex(1)},
 		}, *paths)
 	})
-	t.Run("swapped notifies both indices", func(t *testing.T) {
+	t.Run("move notifies insert and source removal", func(t *testing.T) {
 		m := map[string]any{"list": []any{"a", "b", "c"}}
 
 		inner := &dpb.Entry{}
-		inner.AppendTargets(target.Indices(0))
-		inner.SwappedWith(ref.Index(2))
+		inner.SetTargets([]*dpb.Segment{dpb.SegIndex(0)})
+		inner.SetMove(dpb.FieldNum(2))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(makeEntry(inner)), hook))
@@ -202,7 +200,7 @@ func TestHookJsonList(t *testing.T) {
 			{jField("list"), jIndex(2)},
 		}, *paths)
 	})
-	t.Run("nested notifies with full path", func(t *testing.T) {
+	t.Run("nest notifies with full path", func(t *testing.T) {
 		m := map[string]any{
 			"list": []any{
 				map[string]any{"v": "old"},
@@ -211,16 +209,16 @@ func TestHookJsonList(t *testing.T) {
 		}
 
 		inner := &dpb.Entry{}
-		inner.AppendTargets(target.StringKeys("v"))
-		inner.SetAssigned(patchjson.Value("new"))
+		inner.SetTargets([]*dpb.Segment{dpb.SegName("v")})
+		inner.SetAssign(dpb.ValS("new"))
 
 		list_e := &dpb.Entry{}
-		list_e.AppendTargets(target.Indices(1))
-		list_e.SetNested(dpb.NewDelta(inner))
+		list_e.SetTargets([]*dpb.Segment{dpb.SegIndex(1)})
+		list_e.SetNest(dpb.NewDelta(inner))
 
 		outer := &dpb.Entry{}
-		outer.AppendTargets(target.StringKeys("list"))
-		outer.SetNested(dpb.NewDelta(list_e))
+		outer.SetTargets([]*dpb.Segment{dpb.SegName("list")})
+		outer.SetNest(dpb.NewDelta(list_e))
 
 		hook, paths := collectJsonHook()
 		x.NoError(t, patchjson.Patch(m, dpb.NewDelta(outer), hook))

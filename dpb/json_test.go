@@ -140,13 +140,15 @@ func TestFromJsonPatch(t *testing.T) {
 			want.SetS_1("bar")
 			x.PbEq(t, want, got)
 		})
-		t.Run("optional field not set is no-op", func(t *testing.T) {
+		t.Run("absent optional field is assigned", func(t *testing.T) {
 			a := &sample.Value{}
-			// opt_s has presence tracking; replace on an absent field should be a no-op
+			// replace maps to assign which always sets, even if the field was absent
 			got := apply(t, a, jsonpatch.Doc{
 				{Op: "replace", Path: "/opt_s", Value: jv("bar")},
 			})
-			x.PbEq(t, a, got)
+			want := &sample.Value{}
+			want.SetOptS("bar")
+			x.PbEq(t, want, got)
 		})
 		t.Run("list element", func(t *testing.T) {
 			a := &sample.Value{}

@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        (unknown)
-// source: proto/sample/value.proto
+// source: sample/value.proto
 
 package sample
 
@@ -53,11 +53,11 @@ func (x Level) String() string {
 }
 
 func (Level) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_sample_value_proto_enumTypes[0].Descriptor()
+	return file_sample_value_proto_enumTypes[0].Descriptor()
 }
 
 func (Level) Type() protoreflect.EnumType {
-	return &file_proto_sample_value_proto_enumTypes[0]
+	return &file_sample_value_proto_enumTypes[0]
 }
 
 func (x Level) Number() protoreflect.EnumNumber {
@@ -161,7 +161,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_proto_sample_value_proto_msgTypes[0]
+	mi := &file_sample_value_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -173,7 +173,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sample_value_proto_msgTypes[0]
+	mi := &file_sample_value_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1646,11 +1646,11 @@ func (b0 Value_builder) Build() *Value {
 	return m0
 }
 
-var File_proto_sample_value_proto protoreflect.FileDescriptor
+var File_sample_value_proto protoreflect.FileDescriptor
 
-const file_proto_sample_value_proto_rawDesc = "" +
+const file_sample_value_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/sample/value.proto\x12\vdiff.sample\"\xe2\x13\n" +
+	"\x12sample/value.proto\x12\vdiff.sample\"\xe2\x13\n" +
 	"\x05Value\x12\x13\n" +
 	"\x05f64_1\x18e \x01(\x01R\x04f641\x12\x13\n" +
 	"\x05f32_1\x18f \x01(\x02R\x04f321\x12\x13\n" +
@@ -1750,15 +1750,15 @@ const file_proto_sample_value_proto_rawDesc = "" +
 	"\bLEVEL_LO\x10\x01\x12\f\n" +
 	"\bLEVEL_HI\x10\x02B8Z1github.com/lesomnus/protobuf-diff/internal/sample\x92\x03\x02\b\x02b\beditionsp\xe8\a"
 
-var file_proto_sample_value_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_sample_value_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_proto_sample_value_proto_goTypes = []any{
+var file_sample_value_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_sample_value_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_sample_value_proto_goTypes = []any{
 	(Level)(0),    // 0: diff.sample.Level
 	(*Value)(nil), // 1: diff.sample.Value
 	nil,           // 2: diff.sample.Value.MSSEntry
 	nil,           // 3: diff.sample.Value.MSMEntry
 }
-var file_proto_sample_value_proto_depIdxs = []int32{
+var file_sample_value_proto_depIdxs = []int32{
 	1,  // 0: diff.sample.Value.m_1:type_name -> diff.sample.Value
 	0,  // 1: diff.sample.Value.enum_1:type_name -> diff.sample.Level
 	1,  // 2: diff.sample.Value.m_2:type_name -> diff.sample.Value
@@ -1779,27 +1779,27 @@ var file_proto_sample_value_proto_depIdxs = []int32{
 	0,  // [0:13] is the sub-list for field type_name
 }
 
-func init() { file_proto_sample_value_proto_init() }
-func file_proto_sample_value_proto_init() {
-	if File_proto_sample_value_proto != nil {
+func init() { file_sample_value_proto_init() }
+func file_sample_value_proto_init() {
+	if File_sample_value_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_sample_value_proto_rawDesc), len(file_proto_sample_value_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sample_value_proto_rawDesc), len(file_sample_value_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_proto_sample_value_proto_goTypes,
-		DependencyIndexes: file_proto_sample_value_proto_depIdxs,
-		EnumInfos:         file_proto_sample_value_proto_enumTypes,
-		MessageInfos:      file_proto_sample_value_proto_msgTypes,
+		GoTypes:           file_sample_value_proto_goTypes,
+		DependencyIndexes: file_sample_value_proto_depIdxs,
+		EnumInfos:         file_sample_value_proto_enumTypes,
+		MessageInfos:      file_sample_value_proto_msgTypes,
 	}.Build()
-	File_proto_sample_value_proto = out.File
-	file_proto_sample_value_proto_goTypes = nil
-	file_proto_sample_value_proto_depIdxs = nil
+	File_sample_value_proto = out.File
+	file_sample_value_proto_goTypes = nil
+	file_sample_value_proto_depIdxs = nil
 }

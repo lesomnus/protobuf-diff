@@ -5,42 +5,35 @@ import (
 	"slices"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
-	"github.com/lesomnus/protobuf-diff/ref"
-	"github.com/lesomnus/protobuf-diff/target"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
-func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
-	targets, err := target.DecodeIndices(entry.GetTargets())
-	if err != nil {
-		return fmt.Errorf("decode targets: %w", err)
-	}
+func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescriptor, targets []*dpb.Segment, entry *dpb.Entry) error {
 	if len(targets) == 0 {
+		if entry.WhichKind() == dpb.Entry_Nest_case {
+			return o.PatchField(c, fd, entry.GetNest())
+		}
 		return nil
 	}
 
 	l := c.Len()
-	if l == 0 {
-		if !entry.GetNoUpdate() {
-			// Patch for update op on empty list is no-op.
-			return nil
-		}
-	}
+	indices := expandListTargets(targets, l)
 
-	normal := func(i int) (int, bool) {
+	normalize := func(i int) (int, bool) {
 		if i < 0 {
 			i = l + i
 		}
-		if i < -l || i >= l {
+		if i < 0 || i >= l {
 			return 0, false
 		}
 		return i, true
 	}
+
+	// splice inserts v at each target position (insert mode).
 	splice := func(v protoreflect.Value) {
-		insert_before := make([]int, 0, len(targets))
+		insert_before := make([]int, 0, len(indices))
 		pushbacks := 0
-		for _, i := range targets {
+		for _, i := range indices {
 			if i < -1-l {
 				continue
 			}
@@ -57,12 +50,10 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 			insert_before = append(insert_before, i)
 		}
 		slices.Sort(insert_before)
-
 		us := make([]protoreflect.Value, l)
 		for i := range l {
 			us[i] = c.Get(i)
 		}
-
 		c.Truncate(0)
 		j := 0
 		for i, u := range us {
@@ -77,9 +68,8 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		}
 	}
 
-	// notify_insert fires hooks for each user-specified insertion index.
 	notify_insert := func(v protoreflect.Value) {
-		for _, i := range targets {
+		for _, i := range indices {
 			if i < -1-l || i > l {
 				continue
 			}
@@ -96,16 +86,16 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 	}
 
 	switch entry.WhichKind() {
-	case dpb.Entry_Deleted_case:
-		targets_set := make(map[int]struct{}, len(targets))
-		for _, i := range targets {
-			i, ok := normal(i)
-			if !ok {
-				continue
-			}
-			targets_set[i] = struct{}{}
+	case dpb.Entry_Remove_case:
+		if !entry.GetRemove() {
+			return nil
 		}
-
+		targets_set := make(map[int]struct{}, len(indices))
+		for _, i := range indices {
+			if n, ok := normalize(i); ok {
+				targets_set[n] = struct{}{}
+			}
+		}
 		j := 0
 		for i := range l {
 			if _, ok := targets_set[i]; ok {
@@ -119,218 +109,169 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 		}
 		c.Truncate(j)
 
-	case dpb.Entry_Assigned_case:
-		v, err := o.decodeValue(entry.GetAssigned(), fd)
-		if err != nil {
-			return fmt.Errorf("decode: %w", err)
-		}
-
-		if entry.GetNoUpdate() {
-			splice(v)
-			notify_insert(v)
-		} else {
-			for _, i := range targets {
-				i, ok := normal(i)
-				if !ok {
-					continue
-				}
-				before := Frame{Descriptor: fd, Value: c.Get(i)}
-				c.Set(i, v)
-				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
-				leave()
-			}
-		}
-
-	case dpb.Entry_Copied_case:
-		k, err := ref.DecodeIndex(entry.GetCopied())
-		if err != nil {
-			return fmt.Errorf("copy: unmarshal source index: %w", err)
-		}
-
-		l := c.Len()
-		if !(-l <= k && k < l) {
-			return nil
-		}
-		if k < 0 {
-			k = l + k
-		}
-
-		v := c.Get(k)
-		if entry.GetNoUpdate() {
-			splice(v)
-			notify_insert(v)
-		} else {
-			for _, i := range targets {
-				i, ok := normal(i)
-				if !ok {
-					continue
-				}
-				before := Frame{Descriptor: fd, Value: c.Get(i)}
-				c.Set(i, v)
-				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
-				leave()
-			}
-		}
-
-	case dpb.Entry_Scattered_case:
-		k, err := ref.DecodeIndex(entry.GetScattered())
-		if err != nil {
-			return fmt.Errorf("scatter: unmarshal source index: %w", err)
-		}
-
-		k, ok := normal(k)
-		if !ok {
-			return nil
-		}
-
-		v := c.Get(k)
-		if entry.GetNoUpdate() {
-			insert_before := make([]int, 0, len(targets))
-			pushbacks := 0
-			offset := 0
-			for _, i := range targets {
-				if i < -1-l {
-					continue
-				}
-				if i < -1 {
-					i = l + i + 1
-				}
-				if i == -1 || i == l {
-					pushbacks++
-					continue
-				}
-				if i > l {
-					continue
-				}
-				if i < k {
-					offset++
-				}
-				insert_before = append(insert_before, i)
-			}
-			slices.Sort(insert_before)
-
-			us := make([]protoreflect.Value, l)
-			for i := range l {
-				us[i] = c.Get(i)
-			}
-
-			c.Truncate(0)
-			j := 0
-			for i, u := range us {
-				for j < len(insert_before) && insert_before[j] == i {
-					c.Append(v)
-					j++
-				}
-				c.Append(u)
-			}
-			for range pushbacks {
-				c.Append(v)
-			}
-
-			l = l + j + pushbacks
-			for i := k + offset; i < l-1; i++ {
-				c.Set(i, c.Get(i+1))
-			}
-
-			notify_insert(v)
-			// Also notify for the source index that was removed.
-			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-			o.cursorNotify(Frame{Descriptor: fd, Value: v}, Frame{Descriptor: fd}, entry)
-			leave()
-		} else {
-			for _, i := range targets {
-				i, ok := normal(i)
-				if !ok {
-					continue
-				}
-				before := Frame{Descriptor: fd, Value: c.Get(i)}
-				c.Set(i, v)
-				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
-				leave()
-			}
-			for i := k; i < l-1; i++ {
-				c.Set(i, c.Get(i+1))
-			}
-			// Notify for the source index that was removed.
-			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-			o.cursorNotify(Frame{Descriptor: fd, Value: v}, Frame{Descriptor: fd}, entry)
-			leave()
-		}
-		c.Truncate(l - 1)
-
-	case dpb.Entry_Swapped_case:
-		k, err := ref.DecodeIndex(entry.GetSwapped())
-		if err != nil {
-			return fmt.Errorf("swap: unmarshal source index: %w", err)
-		}
-
-		k, ok := normal(k)
-		if !ok {
-			return nil
-		}
-
-		kBefore := c.Get(k)
-		v := c.Get(k)
-		for _, i := range targets {
-			i, ok := normal(i)
+	case dpb.Entry_Test_case:
+		val := entry.GetTest()
+		for _, i := range indices {
+			n, ok := normalize(i)
 			if !ok {
 				continue
 			}
+			expected, err := valueToProtoValue(val, fd, o.Types)
+			if err != nil {
+				return fmt.Errorf("test: decode: %w", err)
+			}
+			if !protoValueEqual(c.Get(n), expected, fd.Kind()) {
+				return fmt.Errorf("test failed at index %d", n)
+			}
+		}
 
-			before := Frame{Descriptor: fd, Value: c.Get(i)}
-			w := c.Get(i)
-			c.Set(i, v)
-			v = w
-			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-			o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(i)}, entry)
+	case dpb.Entry_Insert_case:
+		val := entry.GetInsert()
+		v, err := valueToProtoValue(val, fd, o.Types)
+		if err != nil {
+			return fmt.Errorf("insert: decode: %w", err)
+		}
+		splice(v)
+		notify_insert(v)
+
+	case dpb.Entry_Assign_case:
+		val := entry.GetAssign()
+		v, err := valueToProtoValue(val, fd, o.Types)
+		if err != nil {
+			return fmt.Errorf("assign: decode: %w", err)
+		}
+		for _, i := range indices {
+			n, ok := normalize(i)
+			if !ok {
+				continue
+			}
+			before := Frame{Descriptor: fd, Value: c.Get(n)}
+			c.Set(n, v)
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: n})
+			o.cursorNotify(before, Frame{Descriptor: fd, Value: c.Get(n)}, entry)
 			leave()
 		}
-		c.Set(k, v)
+
+	case dpb.Entry_Move_case:
+		src := entry.GetMove()
+		k := int(src.GetNumber())
+		k, ok := normalize(k)
+		if !ok {
+			return nil
+		}
+		v := c.Get(k)
+
+		insert_before := make([]int, 0, len(indices))
+		pushbacks := 0
+		offset := 0
+		for _, i := range indices {
+			if i < -1-l {
+				continue
+			}
+			if i < -1 {
+				i = l + i + 1
+			}
+			if i == -1 || i == l {
+				pushbacks++
+				continue
+			}
+			if i > l {
+				continue
+			}
+			if i < k {
+				offset++
+			}
+			insert_before = append(insert_before, i)
+		}
+		slices.Sort(insert_before)
+
+		us := make([]protoreflect.Value, l)
+		for i := range l {
+			us[i] = c.Get(i)
+		}
+		c.Truncate(0)
+		j := 0
+		for i, u := range us {
+			for j < len(insert_before) && insert_before[j] == i {
+				c.Append(v)
+				j++
+			}
+			c.Append(u)
+		}
+		for range pushbacks {
+			c.Append(v)
+		}
+
+		newLen := l + j + pushbacks
+		for i := k + offset; i < newLen-1; i++ {
+			c.Set(i, c.Get(i+1))
+		}
+		notify_insert(v)
 		leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: k})
-		o.cursorNotify(Frame{Descriptor: fd, Value: kBefore}, Frame{Descriptor: fd, Value: c.Get(k)}, entry)
+		o.cursorNotify(Frame{Descriptor: fd, Value: v}, Frame{Descriptor: fd}, entry)
 		leave()
+		c.Truncate(newLen - 1)
 
-	case dpb.Entry_Nested_case:
-		delta := entry.GetNested()
+	case dpb.Entry_Copy_case:
+		src := entry.GetCopy()
+		k := int(src.GetNumber())
+		k, ok := normalize(k)
+		if !ok {
+			return nil
+		}
+		v := c.Get(k)
+		splice(v)
+		notify_insert(v)
 
+	case dpb.Entry_Nest_case:
+		delta := entry.GetNest()
 		kind := fd.Kind()
 		if !(kind == protoreflect.MessageKind || kind == protoreflect.GroupKind) {
-			return fmt.Errorf("nested deltas for lists can only be applied to messages, got %q", kind.String())
+			return fmt.Errorf("nest for lists requires message element kind, got %q", kind)
 		}
-
-		if entry.GetNoUpdate() {
-			mt, err := protoregistry.GlobalTypes.FindMessageByName(fd.Message().FullName())
-			if err != nil {
-				return fmt.Errorf("find message type %q: %w", fd.Message().FullName(), err)
+		for _, i := range indices {
+			n, ok := normalize(i)
+			if !ok {
+				continue
 			}
-
-			sub := mt.New()
+			leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: n})
+			sub := c.Get(n).Message()
 			if err := o.PatchField(sub, fd, delta); err != nil {
-				return err
-			}
-			splice(protoreflect.ValueOfMessage(sub))
-		} else {
-			for _, i := range targets {
-				i, ok := normal(i)
-				if !ok {
-					continue
-				}
-
-				leave := o.cursorEnter(dpb.PathEntry{Kind: dpb.PathEntryIndex, Index: i})
-				v := c.Get(i)
-				sub := v.Message()
-				if err := o.PatchField(sub, fd, delta); err != nil {
-					leave()
-					return fmt.Errorf("[%d]: %w", i, err)
-				}
-				c.Set(i, protoreflect.ValueOfMessage(sub))
 				leave()
+				return fmt.Errorf("[%d]: %w", n, err)
 			}
+			c.Set(n, protoreflect.ValueOfMessage(sub))
+			leave()
 		}
+
+	default:
+		return fmt.Errorf("unknown op: %q", entry.WhichKind())
 	}
 
 	return nil
+}
+
+// expandListTargets converts []*Segment to concrete index values.
+func expandListTargets(targets []*dpb.Segment, l int) []int {
+	out := make([]int, 0, len(targets))
+	for _, seg := range targets {
+		switch seg.WhichKind() {
+		case dpb.Segment_Index_case:
+			out = append(out, int(seg.GetIndex()))
+		case dpb.Segment_Range_case:
+			r := seg.GetRange()
+			begin := int(r.GetBegin())
+			end := int(r.GetEnd())
+			if begin < 0 {
+				begin = l + begin
+			}
+			if end <= 0 {
+				end = l + end
+			}
+			for i := begin; i < end && i < l; i++ {
+				out = append(out, i)
+			}
+		}
+	}
+	return out
 }
