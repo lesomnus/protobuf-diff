@@ -131,7 +131,10 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 		}()
 	}
 
-	v, fd, err := Navigate(v, fd, pathSegs)
+	// A test only reads; every other kind mutates. Mutating navigation refuses
+	// to descend into unset containers (which would panic on mutation).
+	mutate := entry.WhichKind() != dpb.Entry_Test_case
+	v, fd, err := navigate(v, fd, pathSegs, mutate)
 	if err != nil {
 		return fmt.Errorf("navigate path: %w", err)
 	}
@@ -150,10 +153,63 @@ func (o PatchOption) patch(v any, fd protoreflect.FieldDescriptor, entry *dpb.En
 	}
 }
 
+// isNumericKind reports whether a field kind holds a numeric, enum, or bool
+// value — the kinds that integer/unsigned Values can be converted to.
+func isNumericKind(k protoreflect.Kind) bool {
+	switch k {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind,
+		protoreflect.FloatKind, protoreflect.DoubleKind,
+		protoreflect.BoolKind, protoreflect.EnumKind:
+		return true
+	default:
+		return false
+	}
+}
+
+// checkValueAssignable verifies that a Value's kind can be converted to the
+// target field's kind before valueToProtoValue produces a protoreflect.Value.
+// Without this guard a mismatched kind (e.g. a string Value for a message field)
+// would build a wrong-typed value and panic at Set/Append time, or nil-deref
+// fd.Message() for a message Value against a scalar field.
+func checkValueAssignable(val *dpb.Value, fd protoreflect.FieldDescriptor) error {
+	if fd == nil {
+		return nil
+	}
+	k := fd.Kind()
+	ok := true
+	switch val.WhichKind() {
+	case dpb.Value_M_case:
+		ok = k == protoreflect.MessageKind || k == protoreflect.GroupKind
+	case dpb.Value_F_case:
+		ok = k == protoreflect.FloatKind || k == protoreflect.DoubleKind
+	case dpb.Value_S_case:
+		ok = k == protoreflect.StringKind
+	case dpb.Value_B_case:
+		ok = k == protoreflect.BoolKind
+	case dpb.Value_X_case:
+		ok = k == protoreflect.BytesKind
+	case dpb.Value_I_case, dpb.Value_U_case:
+		ok = isNumericKind(k)
+	case dpb.Value_L_case:
+		// Lists are handled at the container level; an L here is a mismatch.
+		ok = false
+	}
+	if !ok {
+		return fmt.Errorf("value kind %v is not assignable to %s (kind %v)", val.WhichKind(), fd.FullName(), k)
+	}
+	return nil
+}
+
 // valueToProtoValue converts a *dpb.Value to a protoreflect.Value using the field descriptor.
 func valueToProtoValue(val *dpb.Value, fd protoreflect.FieldDescriptor, types protoregistry.MessageTypeResolver) (protoreflect.Value, error) {
 	if val == nil {
 		return protoreflect.Value{}, nil
+	}
+	if err := checkValueAssignable(val, fd); err != nil {
+		return protoreflect.Value{}, err
 	}
 	switch val.WhichKind() {
 	case dpb.Value_N_case:
@@ -232,7 +288,7 @@ func valueToProtoValue(val *dpb.Value, fd protoreflect.FieldDescriptor, types pr
 			return protoreflect.Value{}, fmt.Errorf("find message type %q: %w", fd.Message().FullName(), err)
 		}
 		m := mt.New()
-		if err := applyStructToMessage(val.GetM(), m); err != nil {
+		if err := applyStructToMessage(val.GetM(), m, types); err != nil {
 			return protoreflect.Value{}, err
 		}
 		return protoreflect.ValueOfMessage(m), nil
@@ -242,8 +298,10 @@ func valueToProtoValue(val *dpb.Value, fd protoreflect.FieldDescriptor, types pr
 	}
 }
 
-// applyStructToMessage populates a message from a Struct.
-func applyStructToMessage(s *dpb.Struct, m protoreflect.Message) error {
+// applyStructToMessage populates a message from a Struct. Fields present in the
+// struct are set (or cleared when the value is null/unset); fields not mentioned
+// are left untouched.
+func applyStructToMessage(s *dpb.Struct, m protoreflect.Message, types protoregistry.MessageTypeResolver) error {
 	if s == nil {
 		return nil
 	}
@@ -253,15 +311,123 @@ func applyStructToMessage(s *dpb.Struct, m protoreflect.Message) error {
 		if fd == nil {
 			continue
 		}
-		v, err := valueToProtoValue(kv.GetValue(), fd, nil)
-		if err != nil {
+		if err := setMessageField(m, fd, kv.GetValue(), types); err != nil {
 			return fmt.Errorf("field %s: %w", fd.Name(), err)
+		}
+	}
+	return nil
+}
+
+// setMessageField sets a single field of m from a dpb.Value, dispatching on
+// whether the field is a list, a map, or a scalar/message. List and map fields
+// are replaced wholesale (any existing contents are discarded).
+func setMessageField(m protoreflect.Message, fd protoreflect.FieldDescriptor, val *dpb.Value, types protoregistry.MessageTypeResolver) error {
+	switch {
+	case fd.IsList():
+		return setListField(m, fd, val, types)
+	case fd.IsMap():
+		return setMapField(m, fd, val, types)
+	default:
+		v, err := valueToProtoValue(val, fd, types)
+		if err != nil {
+			return err
 		}
 		if !v.IsValid() {
 			m.Clear(fd)
 		} else {
 			m.Set(fd, v)
 		}
+		return nil
+	}
+}
+
+// isClearValue reports whether a Value means "clear the field" (nil, unset, or
+// the explicit null value).
+func isClearValue(val *dpb.Value) bool {
+	if val == nil {
+		return true
+	}
+	switch val.WhichKind() {
+	case dpb.Value_Kind_not_set_case, dpb.Value_N_case:
+		return true
+	default:
+		return false
+	}
+}
+
+// setListField replaces a repeated field with the elements of a ListValue.
+func setListField(m protoreflect.Message, fd protoreflect.FieldDescriptor, val *dpb.Value, types protoregistry.MessageTypeResolver) error {
+	if isClearValue(val) {
+		m.Clear(fd)
+		return nil
+	}
+	if val.WhichKind() != dpb.Value_L_case {
+		return fmt.Errorf("expected list value for repeated field, got %v", val.WhichKind())
+	}
+	lst := m.NewField(fd).List()
+	if err := appendDpbValues(lst, val.GetL().GetValues(), fd, types); err != nil {
+		return err
+	}
+	m.Set(fd, protoreflect.ValueOfList(lst))
+	return nil
+}
+
+// setMapField replaces a map field with the entries of a Struct whose KeyValue
+// keys are the map keys.
+func setMapField(m protoreflect.Message, fd protoreflect.FieldDescriptor, val *dpb.Value, types protoregistry.MessageTypeResolver) error {
+	if isClearValue(val) {
+		m.Clear(fd)
+		return nil
+	}
+	if val.WhichKind() != dpb.Value_M_case {
+		return fmt.Errorf("expected struct value for map field, got %v", val.WhichKind())
+	}
+	mp := m.NewField(fd).Map()
+	if err := setMapEntries(mp, fd.MapKey(), fd.MapValue(), val.GetM().GetFields(), types, false); err != nil {
+		return err
+	}
+	m.Set(fd, protoreflect.ValueOfMap(mp))
+	return nil
+}
+
+// appendDpbValues converts each dpb.Value against the (element) descriptor fd
+// and appends it to list, dropping null/invalid elements. Shared by whole-list
+// replace in a message field (setListField) and at a list root (patchListRoot).
+func appendDpbValues(list protoreflect.List, vals []*dpb.Value, fd protoreflect.FieldDescriptor, types protoregistry.MessageTypeResolver) error {
+	for i, ev := range vals {
+		pv, err := valueToProtoValue(ev, fd, types)
+		if err != nil {
+			return fmt.Errorf("[%d]: %w", i, err)
+		}
+		if !pv.IsValid() {
+			continue // null element — dropped
+		}
+		list.Append(pv)
+	}
+	return nil
+}
+
+// setMapEntries sets each Struct KeyValue into mp as a map entry, keyed by the
+// FieldSegment. When onlyAbsent is true, keys already present are left untouched
+// (merge). Null/invalid values are dropped. Shared by whole-map replace in a
+// message field (setMapField) and at a map root (patchMapRoot).
+func setMapEntries(mp protoreflect.Map, kd, vd protoreflect.FieldDescriptor, fields []*dpb.KeyValue, types protoregistry.MessageTypeResolver, onlyAbsent bool) error {
+	for _, kv := range fields {
+		mk, err := fieldSegmentToMapKey(kv.GetKey(), kd.Kind())
+		if err != nil {
+			return err
+		}
+		if onlyAbsent && mp.Has(mk) {
+			continue
+		}
+		pv, err := valueToProtoValue(kv.GetValue(), vd, types)
+		if err != nil {
+			return fmt.Errorf("[%v]: %w", mk, err)
+		}
+		if !pv.IsValid() {
+			continue // null value — dropped
+		}
+		mp.Set(mk, pv)
 	}
 	return nil
 }

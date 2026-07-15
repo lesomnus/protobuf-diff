@@ -1,5 +1,5 @@
 {
-	"name": "lesomnus.protobuf-diff",
+	"name": "lesomnus/protobuf-diff",
 	"dockerComposeFile": "docker-compose.yaml",
 	"service": "dev",
 	"workspaceFolder": "/workspace",

@@ -5,15 +5,13 @@ import (
 	"fmt"
 
 	"github.com/lesomnus/protobuf-diff/dpb"
+	"google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func (o PatchOption) patchMessage(c protoreflect.Message, _ protoreflect.FieldDescriptor, targets []*dpb.Segment, entry *dpb.Entry) error {
+func (o PatchOption) patchMessage(c protoreflect.Message, fd protoreflect.FieldDescriptor, targets []*dpb.Segment, entry *dpb.Entry) error {
 	if len(targets) == 0 {
-		if entry.WhichKind() == dpb.Entry_Nest_case {
-			return o.PatchField(c, nil, entry.GetNest())
-		}
-		return nil
+		return o.patchMessageRoot(c, fd, entry)
 	}
 
 	fields := c.Descriptor().Fields()
@@ -82,6 +80,9 @@ func (o PatchOption) patchMessage(c protoreflect.Message, _ protoreflect.FieldDe
 		if fd_src == nil {
 			return nil
 		}
+		if fd_src.IsList() || fd_src.IsMap() {
+			return fmt.Errorf("move source %s cannot be a repeated or map field", fd_src.FullName())
+		}
 		v := c.Get(fd_src)
 		hasSrc := c.Has(fd_src)
 		cleared := false
@@ -107,6 +108,9 @@ func (o PatchOption) patchMessage(c protoreflect.Message, _ protoreflect.FieldDe
 		fd_src := findFieldByFieldSegment(fields, src)
 		if fd_src == nil {
 			return nil
+		}
+		if fd_src.IsList() || fd_src.IsMap() {
+			return fmt.Errorf("copy source %s cannot be a repeated or map field", fd_src.FullName())
 		}
 		hasSrc := c.Has(fd_src)
 		v := c.Get(fd_src)
@@ -144,10 +148,25 @@ func (o PatchOption) patchMessage(c protoreflect.Message, _ protoreflect.FieldDe
 		return fmt.Errorf("unknown op: %q", entry.WhichKind())
 	}
 
+	// assign/insert/test/move/copy operate on a single scalar or message value;
+	// applied to a repeated or map field they would panic in protoreflect. Only
+	// remove (clear) and nest (recurse) are valid on those. Reject the rest with
+	// a clear error, pointing at nest or a root (no-target) operation instead.
+	singularOnly := false
+	switch entry.WhichKind() {
+	case dpb.Entry_Assign_case, dpb.Entry_Insert_case, dpb.Entry_Test_case,
+		dpb.Entry_Move_case, dpb.Entry_Copy_case:
+		singularOnly = true
+	}
+
 	errs := make([]error, 0, len(targets))
 	for _, seg := range targets {
 		fd := messageFieldBySeg(fields, seg)
 		if fd == nil {
+			continue
+		}
+		if singularOnly && (fd.IsList() || fd.IsMap()) {
+			errs = append(errs, fmt.Errorf("field %s: %v cannot target a repeated or map field; use nest or a root operation", fd.FullName(), entry.WhichKind()))
 			continue
 		}
 
@@ -162,6 +181,109 @@ func (o PatchOption) patchMessage(c protoreflect.Message, _ protoreflect.FieldDe
 		leave()
 	}
 	return errors.Join(errs...)
+}
+
+// patchMessageRoot applies an entry with no targets to the message itself —
+// the root, or the message reached by the entry's path. This is where
+// whole-message operations (replace, clear, test) live.
+func (o PatchOption) patchMessageRoot(c protoreflect.Message, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
+	switch entry.WhichKind() {
+	case dpb.Entry_Nest_case:
+		return o.PatchField(c, nil, entry.GetNest())
+
+	case dpb.Entry_Remove_case:
+		if !entry.GetRemove() {
+			return nil
+		}
+		before := snapshotMessage(c)
+		clearAllMessageFields(c)
+		o.cursorNotify(Frame{Descriptor: fd, Value: before}, Frame{Descriptor: fd, Value: protoreflect.ValueOfMessage(c)}, entry)
+		return nil
+
+	case dpb.Entry_Test_case:
+		val := entry.GetTest()
+		if isClearValue(val) {
+			if !messageIsEmpty(c) {
+				return fmt.Errorf("test failed at root: message is not empty")
+			}
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_M_case {
+			return fmt.Errorf("test at message root requires a message value, got %v", val.WhichKind())
+		}
+		expected := c.New()
+		if err := applyStructToMessage(val.GetM(), expected, o.Types); err != nil {
+			return fmt.Errorf("test: decode: %w", err)
+		}
+		if !proto.Equal(c.Interface(), expected.Interface()) {
+			return fmt.Errorf("test failed at root")
+		}
+		return nil
+
+	case dpb.Entry_Assign_case:
+		val := entry.GetAssign()
+		if !isClearValue(val) && val.WhichKind() != dpb.Value_M_case {
+			return fmt.Errorf("assign at message root requires a message value, got %v", val.WhichKind())
+		}
+		before := snapshotMessage(c)
+		clearAllMessageFields(c)
+		if !isClearValue(val) {
+			if err := applyStructToMessage(val.GetM(), c, o.Types); err != nil {
+				return fmt.Errorf("assign: decode: %w", err)
+			}
+		}
+		o.cursorNotify(Frame{Descriptor: fd, Value: before}, Frame{Descriptor: fd, Value: protoreflect.ValueOfMessage(c)}, entry)
+		return nil
+
+	case dpb.Entry_Insert_case:
+		if !messageIsEmpty(c) {
+			return nil // present — no-op for insert
+		}
+		val := entry.GetInsert()
+		if isClearValue(val) {
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_M_case {
+			return fmt.Errorf("insert at message root requires a message value, got %v", val.WhichKind())
+		}
+		before := snapshotMessage(c)
+		if err := applyStructToMessage(val.GetM(), c, o.Types); err != nil {
+			return fmt.Errorf("insert: decode: %w", err)
+		}
+		o.cursorNotify(Frame{Descriptor: fd, Value: before}, Frame{Descriptor: fd, Value: protoreflect.ValueOfMessage(c)}, entry)
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported root op for message: %q", entry.WhichKind())
+	}
+}
+
+// snapshotMessage returns a deep copy of c wrapped as a protoreflect.Value, for
+// use as the "before" frame of a root-level notification.
+func snapshotMessage(c protoreflect.Message) protoreflect.Value {
+	return protoreflect.ValueOfMessage(proto.Clone(c.Interface()).ProtoReflect())
+}
+
+// clearAllMessageFields clears every populated field of c.
+func clearAllMessageFields(c protoreflect.Message) {
+	var fds []protoreflect.FieldDescriptor
+	c.Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		fds = append(fds, fd)
+		return true
+	})
+	for _, fd := range fds {
+		c.Clear(fd)
+	}
+}
+
+// messageIsEmpty reports whether c has no populated fields.
+func messageIsEmpty(c protoreflect.Message) bool {
+	empty := true
+	c.Range(func(protoreflect.FieldDescriptor, protoreflect.Value) bool {
+		empty = false
+		return false
+	})
+	return empty
 }
 
 // messageFieldBySeg resolves a Segment to a FieldDescriptor within a message.

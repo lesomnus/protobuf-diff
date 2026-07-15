@@ -27,10 +27,7 @@ func mapKeyToPathEntry(k protoreflect.MapKey) dpb.PathEntry {
 
 func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescriptor, targets []*dpb.Segment, entry *dpb.Entry) error {
 	if len(targets) == 0 {
-		if entry.WhichKind() == dpb.Entry_Nest_case {
-			return o.PatchField(c, fd, entry.GetNest())
-		}
-		return nil
+		return o.patchMapRoot(c, fd, entry)
 	}
 
 	kd := fd.MapKey()
@@ -204,6 +201,101 @@ func (o PatchOption) patchMap(c protoreflect.Map, fd protoreflect.FieldDescripto
 	return errors.Join(errs...)
 }
 
+// patchMapRoot applies an entry with no targets to the map itself — the map
+// reached by the entry's path. Bulk operations (replace, clear, merge, test)
+// operate on the whole map. Cursor notifications are not emitted for these bulk
+// operations.
+func (o PatchOption) patchMapRoot(c protoreflect.Map, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
+	kd := fd.MapKey()
+	vd := fd.MapValue()
+
+	clearAll := func() {
+		var keys []protoreflect.MapKey
+		c.Range(func(k protoreflect.MapKey, _ protoreflect.Value) bool {
+			keys = append(keys, k)
+			return true
+		})
+		for _, k := range keys {
+			c.Clear(k)
+		}
+	}
+
+	switch entry.WhichKind() {
+	case dpb.Entry_Nest_case:
+		return o.PatchField(c, fd, entry.GetNest())
+
+	case dpb.Entry_Remove_case:
+		if entry.GetRemove() {
+			clearAll()
+		}
+		return nil
+
+	case dpb.Entry_Assign_case:
+		val := entry.GetAssign()
+		if isClearValue(val) {
+			clearAll()
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_M_case {
+			return fmt.Errorf("assign at map root requires a struct value, got %v", val.WhichKind())
+		}
+		clearAll()
+		if err := setMapEntries(c, kd, vd, val.GetM().GetFields(), o.Types, false); err != nil {
+			return fmt.Errorf("assign: %w", err)
+		}
+		return nil
+
+	case dpb.Entry_Insert_case:
+		val := entry.GetInsert()
+		if isClearValue(val) {
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_M_case {
+			return fmt.Errorf("insert at map root requires a struct value, got %v", val.WhichKind())
+		}
+		if err := setMapEntries(c, kd, vd, val.GetM().GetFields(), o.Types, true); err != nil {
+			return fmt.Errorf("insert: %w", err)
+		}
+		return nil
+
+	case dpb.Entry_Test_case:
+		val := entry.GetTest()
+		if isClearValue(val) {
+			if c.Len() != 0 {
+				return fmt.Errorf("test failed at map root: map is not empty")
+			}
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_M_case {
+			return fmt.Errorf("test at map root requires a struct value, got %v", val.WhichKind())
+		}
+		want := val.GetM().GetFields()
+		if c.Len() != len(want) {
+			return fmt.Errorf("test failed at map root: size %d != %d", c.Len(), len(want))
+		}
+		for _, kv := range want {
+			mk, err := fieldSegmentToMapKey(kv.GetKey(), kd.Kind())
+			if err != nil {
+				return fmt.Errorf("test: %w", err)
+			}
+			if !c.Has(mk) {
+				return fmt.Errorf("test failed at map root: missing key %v", mk)
+			}
+			expected, err := valueToProtoValue(kv.GetValue(), vd, o.Types)
+			if err != nil {
+				return fmt.Errorf("test: [%v]: %w", mk, err)
+			}
+			if !protoValueEqual(c.Get(mk), expected, vd.Kind()) {
+				return fmt.Errorf("test failed at map root: key %v", mk)
+			}
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported root op for map: %q", entry.WhichKind())
+	}
+}
+
 // mapKeysFromSegments converts target Segments to MapKey values.
 func mapKeysFromSegments(targets []*dpb.Segment, kind protoreflect.Kind) ([]protoreflect.MapKey, error) {
 	keys := make([]protoreflect.MapKey, 0, len(targets))
@@ -257,7 +349,9 @@ func fieldSegmentToMapKey(fs *dpb.FieldSegment, kind protoreflect.Kind) (protore
 	}
 	switch kind {
 	case protoreflect.StringKind:
-		if fs.HasName() && fs.GetName() != "" {
+		// A present name — even the empty string — is the string key. Only fall
+		// back to the number when no name was set at all (e.g. FieldNum keys).
+		if fs.HasName() {
 			return protoreflect.ValueOfString(fs.GetName()).MapKey(), nil
 		}
 		return protoreflect.ValueOfString(fmt.Sprintf("%d", fs.GetNumber())).MapKey(), nil

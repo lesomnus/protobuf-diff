@@ -10,10 +10,7 @@ import (
 
 func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescriptor, targets []*dpb.Segment, entry *dpb.Entry) error {
 	if len(targets) == 0 {
-		if entry.WhichKind() == dpb.Entry_Nest_case {
-			return o.PatchField(c, fd, entry.GetNest())
-		}
-		return nil
+		return o.patchListRoot(c, fd, entry)
 	}
 
 	l := c.Len()
@@ -249,6 +246,80 @@ func (o PatchOption) patchList(c protoreflect.List, fd protoreflect.FieldDescrip
 	}
 
 	return nil
+}
+
+// patchListRoot applies an entry with no targets to the list itself — the list
+// reached by the entry's path. Bulk operations (replace, clear, append, test)
+// operate on the whole list. Cursor notifications are not emitted for these bulk
+// operations.
+func (o PatchOption) patchListRoot(c protoreflect.List, fd protoreflect.FieldDescriptor, entry *dpb.Entry) error {
+	switch entry.WhichKind() {
+	case dpb.Entry_Nest_case:
+		return o.PatchField(c, fd, entry.GetNest())
+
+	case dpb.Entry_Remove_case:
+		if entry.GetRemove() {
+			c.Truncate(0)
+		}
+		return nil
+
+	case dpb.Entry_Assign_case:
+		val := entry.GetAssign()
+		if isClearValue(val) {
+			c.Truncate(0)
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_L_case {
+			return fmt.Errorf("assign at list root requires a list value, got %v", val.WhichKind())
+		}
+		c.Truncate(0)
+		if err := appendDpbValues(c, val.GetL().GetValues(), fd, o.Types); err != nil {
+			return fmt.Errorf("assign: %w", err)
+		}
+		return nil
+
+	case dpb.Entry_Insert_case:
+		val := entry.GetInsert()
+		if isClearValue(val) {
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_L_case {
+			return fmt.Errorf("insert at list root requires a list value, got %v", val.WhichKind())
+		}
+		if err := appendDpbValues(c, val.GetL().GetValues(), fd, o.Types); err != nil {
+			return fmt.Errorf("insert: %w", err)
+		}
+		return nil
+
+	case dpb.Entry_Test_case:
+		val := entry.GetTest()
+		if isClearValue(val) {
+			if c.Len() != 0 {
+				return fmt.Errorf("test failed at list root: list is not empty")
+			}
+			return nil
+		}
+		if val.WhichKind() != dpb.Value_L_case {
+			return fmt.Errorf("test at list root requires a list value, got %v", val.WhichKind())
+		}
+		want := val.GetL().GetValues()
+		if c.Len() != len(want) {
+			return fmt.Errorf("test failed at list root: length %d != %d", c.Len(), len(want))
+		}
+		for i, ev := range want {
+			expected, err := valueToProtoValue(ev, fd, o.Types)
+			if err != nil {
+				return fmt.Errorf("test: [%d]: %w", i, err)
+			}
+			if !protoValueEqual(c.Get(i), expected, fd.Kind()) {
+				return fmt.Errorf("test failed at list root: index %d", i)
+			}
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported root op for list: %q", entry.WhichKind())
+	}
 }
 
 // expandListTargets converts []*Segment to concrete index values.
